@@ -5,7 +5,7 @@
  *
  * Two entry points:
  *   1. Programmatic: import { createGovernedProxy } from '@sovereign-labs/mcp-proxy'
- *   2. CLI: bunx @sovereign-labs/mcp-proxy --upstream "..." [--state-dir ...] [--enforcement ...]
+ *   2. CLI: npx @sovereign-labs/mcp-proxy --upstream "..." [--state-dir ...] [--enforcement ...]
  *
  * Usage:
  *
@@ -117,12 +117,12 @@ function printUsage(): void {
 @sovereign-labs/mcp-proxy — Tamper-evident governance for MCP tool servers
 
 Usage:
-  bunx @sovereign-labs/mcp-proxy --upstream "command" [options]
-  bunx @sovereign-labs/mcp-proxy --wrap <server>   [--config <path>] [--enforcement <mode>]
-  bunx @sovereign-labs/mcp-proxy --unwrap <server> [--config <path>]
-  bunx @sovereign-labs/mcp-proxy --view     [--state-dir <dir>] [--tool <name>] [--outcome <type>] [--limit <n>]
-  bunx @sovereign-labs/mcp-proxy --receipts [--state-dir <dir>]
-  bunx @sovereign-labs/mcp-proxy --verify  [--state-dir <dir>]
+  npx @sovereign-labs/mcp-proxy --upstream "command" [options]
+  npx @sovereign-labs/mcp-proxy --wrap <server>   [--config <path>] [--enforcement <mode>]
+  npx @sovereign-labs/mcp-proxy --unwrap <server> [--config <path>]
+  npx @sovereign-labs/mcp-proxy --view     [--state-dir <dir>] [--tool <name>] [--outcome <type>] [--limit <n>]
+  npx @sovereign-labs/mcp-proxy --receipts [--state-dir <dir>]
+  npx @sovereign-labs/mcp-proxy --verify  [--state-dir <dir>]
 
 Proxy mode (wraps an upstream MCP server):
   --upstream <cmd>        Upstream MCP server command (required for proxy mode)
@@ -148,18 +148,18 @@ View filters:
   --help, -h              Show this help
 
 Examples:
-  bunx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
-  bunx @sovereign-labs/mcp-proxy --view
-  bunx @sovereign-labs/mcp-proxy --view --tool sovereign_submit --outcome success
-  bunx @sovereign-labs/mcp-proxy --receipts
-  bunx @sovereign-labs/mcp-proxy --verify
+  npx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
+  npx @sovereign-labs/mcp-proxy --view
+  npx @sovereign-labs/mcp-proxy --view --tool sovereign_submit --outcome success
+  npx @sovereign-labs/mcp-proxy --receipts
+  npx @sovereign-labs/mcp-proxy --verify
 
 Claude Code config (.mcp.json):
   {
     "mcpServers": {
       "governed-filesystem": {
-        "command": "bunx",
-        "args": ["@sovereign-labs/mcp-proxy", "--upstream", "npx -y @modelcontextprotocol/server-filesystem /tmp"]
+        "command": "npx",
+        "args": ["-y", "@sovereign-labs/mcp-proxy", "--upstream", "npx -y @modelcontextprotocol/server-filesystem /tmp"]
       }
     }
   }
