@@ -415,9 +415,10 @@ export function wrapServer(serverName: string, opts: { config?: string; enforcem
   const govStateDir = opts.stateDir ?? `.governance-${serverName}`;
   const enforcement = opts.enforcement ?? 'advisory';
 
-  // Rewrite to proxy
+  // Rewrite to proxy (-y prevents interactive install prompt in MCP clients)
   server.command = 'npx';
   server.args = [
+    '-y',
     '@sovereign-labs/mcp-proxy',
     '--enforcement', enforcement,
     '--state-dir', govStateDir,
