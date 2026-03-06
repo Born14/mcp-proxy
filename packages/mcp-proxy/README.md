@@ -1,8 +1,25 @@
 # @sovereign-labs/mcp-proxy
 
-**Audit trail + guardrails for AI tool execution.**
+**See what your agent did. Verify nobody tampered with the record. Stop broken retries.**
 
-A drop-in proxy that records and verifies everything an AI agent does through MCP.
+A drop-in governance proxy for any MCP tool server. One command to add tamper-evident receipts, failure memory, and authority tracking.
+
+## The Trust Demo (4 commands)
+
+```bash
+# 1. Govern your filesystem server
+npx @sovereign-labs/mcp-proxy --wrap filesystem
+
+# 2. Use Claude Code normally — every tool call is now receipted
+
+# 3. See what happened
+npx @sovereign-labs/mcp-proxy --view --state-dir .governance-filesystem
+
+# 4. Verify the record is intact
+npx @sovereign-labs/mcp-proxy --verify --state-dir .governance-filesystem
+```
+
+That's it. Your agent doesn't know the proxy exists. Your MCP server doesn't know either. But now you have proof.
 
 ## The Problem
 
@@ -10,11 +27,11 @@ A drop-in proxy that records and verifies everything an AI agent does through MC
 
 ```
 Agent runs:
-  write_file("/app/config.json", content)    → Permission denied
-  write_file("/app/config.json", content)    → Permission denied
-  write_file("/app/config.json", content)    → Permission denied
+  write_file("/app/config.json", content)    -> Permission denied
+  write_file("/app/config.json", content)    -> Permission denied
+  write_file("/app/config.json", content)    -> Permission denied
   ...
-  write_file("/app/config.json", content)    → Permission denied    x 37
+  write_file("/app/config.json", content)    -> Permission denied    x 37
 
 No audit trail.  No failure memory.  No way to prove what happened.
 ```
@@ -26,87 +43,55 @@ After a session, you can't answer basic questions:
 - Who authorized that action?
 - Was the audit trail modified after the fact?
 
-## With This Proxy
-
-```
-  write_file("/app/config.json", content)    → Permission denied
-  ↳ constraint learned: write_file + /app/config.json + permission_denied
-
-  write_file("/app/config.json", content)    → BLOCKED (known failure)
-  write_file("/app/data.json", content)      → success (different target, allowed)
-```
-
-```
-  SESSION SUMMARY
-  ═══════════════════════════════════════
-
-  receipts:          47
-  duration:          12.3m
-  chain integrity:   ✓ verified
-
-  mutations:         12
-  readonly:          35
-  blocked:           1
-  errors:            3
-  succeeded:         43
-
-  constraints:       3 (2 active)
-
-  tools:
-    read_file                        18
-    write_file                       9
-    list_directory                   8
-    ...
-
-  last hash:         8c1a7d3b4e2f...
-  state dir:         .governance/
-```
-
-Every call receipted. Failures remembered. Chain verifiable.
-
-## Quick Start
-
-```bash
-npx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
-```
-
-That's it. The proxy wraps your MCP server. Your agent talks to the proxy, the proxy talks to the server.
-
-After a session:
-
-```bash
-npx @sovereign-labs/mcp-proxy --receipts          # what happened
-npx @sovereign-labs/mcp-proxy --verify            # was the audit trail tampered with
-```
-
-## What It Does
+## What You Get
 
 ```
 Agent (Claude, GPT, etc.)
-  ↓ stdio
+  | stdio
 @sovereign-labs/mcp-proxy
-  ├─ Record: tamper-evident receipt for every call
-  ├─ Learn:  failures seed constraints (don't repeat mistakes)
-  ├─ Guard:  block calls that match known failures
-  ├─ Track:  controller identity + authority epoch
-  ├─ Detect: convergence failures (agent stuck in loops)
-  ↓ stdio
+  |-- Record: tamper-evident receipt for every call
+  |-- Learn:  failures seed constraints (don't repeat mistakes)
+  |-- Guard:  block calls that match known failures
+  |-- Track:  controller identity + authority epoch
+  | stdio
 Your MCP Server (filesystem, database, anything)
 ```
 
 No changes to your agent. No changes to your MCP server. Drop-in.
 
-## Three Guarantees
+### Three Guarantees
 
 1. **Receipts** — Every tool call produces a hash-chained record. Like git commits for tool execution. Tamper with one receipt and the chain breaks.
 
-2. **Constraints** — When a tool call fails, the proxy fingerprints the failure and blocks identical calls within a TTL window. The agent can't repeat the same mistake.
+2. **Constraints** — When a tool call fails, the proxy fingerprints the failure and blocks identical calls within a TTL window. Your agent can't repeat the same mistake.
 
 3. **Authority** — A stable controller ID and monotonic epoch counter. You can prove which controller was active and whether authority was still valid when a call was made.
 
-## Use with Claude Code
+## Quick Start
 
-Add to your `.mcp.json`:
+### Option A: Wrap an existing server (recommended)
+
+If you already have MCP servers in `.mcp.json`:
+
+```bash
+npx @sovereign-labs/mcp-proxy --wrap filesystem
+```
+
+Done. Restart your MCP client. To remove governance later:
+
+```bash
+npx @sovereign-labs/mcp-proxy --unwrap filesystem
+```
+
+Receipts are preserved even after unwrapping.
+
+### Option B: Direct proxy mode
+
+```bash
+npx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
+```
+
+### Option C: Manual .mcp.json
 
 ```json
 {
@@ -114,7 +99,7 @@ Add to your `.mcp.json`:
     "governed-filesystem": {
       "command": "npx",
       "args": [
-        "@sovereign-labs/mcp-proxy",
+        "-y", "@sovereign-labs/mcp-proxy",
         "--upstream", "npx -y @modelcontextprotocol/server-filesystem /tmp"
       ]
     }
@@ -122,91 +107,92 @@ Add to your `.mcp.json`:
 }
 ```
 
-## Enforcement Modes
-
-| Mode | On violation | Receipts |
-|------|-------------|----------|
-| `strict` (default) | Block the call, return error | Always |
-| `advisory` | Log + forward anyway | Always |
-
-Start with advisory to see what the proxy catches without blocking anything:
-
-```bash
-npx @sovereign-labs/mcp-proxy --enforcement advisory --upstream "your-server"
-```
-
-## What Gets Recorded
-
-Every receipt contains:
-
-| Field | What it means |
-|-------|---------------|
-| `hash` / `previousHash` | SHA-256 chain — tamper-evident |
-| `toolName` / `arguments` | What was called |
-| `target` | Primary resource (file path, API endpoint, etc.) |
-| `mutationType` | `mutating` or `readonly` (heuristic) |
-| `outcome` | `success`, `error`, or `blocked` |
-| `constraintCheck` | Did this match a known failure? |
-| `authorityCheck` | Was the authority epoch valid? |
-| `controllerId` | Which controller made this call |
-| `convergenceSignal` | Is the agent stuck? (`none`, `warning`, `exhausted`, `loop`) |
-
-## Governance Tools
-
-The proxy injects 5 tools into the upstream's tool list (the agent can call them):
-
-| Tool | What it does |
-|------|-------------|
-| `governance_status` | Inspect: controller ID, epoch, constraint count, receipt count |
-| `governance_bump_authority` | Advance the authority epoch (invalidates stale sessions) |
-| `governance_declare_intent` | Declare goal + predicates for containment attribution |
-| `governance_clear_intent` | Clear declared intent |
-| `governance_convergence_status` | Inspect failure signatures and loop detection state |
-
-## State Directory
-
-All state persists in `.governance/` (or `--state-dir <path>`):
-
-| File | What it stores |
-|------|---------------|
-| `receipts.jsonl` | Append-only hash-chained audit trail |
-| `constraints.json` | Failure fingerprints that block repeat calls |
-| `controller.json` | Stable controller UUID |
-| `authority.json` | Authority epoch + session binding |
-| `intent.json` | Declared intent for containment attribution |
-
 ## CLI Reference
 
 ```bash
-# Proxy mode — wrap an MCP server
+# Setup
+npx @sovereign-labs/mcp-proxy --wrap <server>     # Govern an existing MCP server
+npx @sovereign-labs/mcp-proxy --unwrap <server>   # Restore original config
+
+# Inspection (offline, no proxy needed)
+npx @sovereign-labs/mcp-proxy --view              # Per-receipt timeline
+npx @sovereign-labs/mcp-proxy --view --tool write  # Filter by tool name
+npx @sovereign-labs/mcp-proxy --view --outcome error  # Show only failures
+npx @sovereign-labs/mcp-proxy --receipts          # Session summary
+npx @sovereign-labs/mcp-proxy --verify            # Tamper detection
+
+# Proxy mode
 npx @sovereign-labs/mcp-proxy --upstream "command"
 npx @sovereign-labs/mcp-proxy --upstream "command" --enforcement advisory
 npx @sovereign-labs/mcp-proxy --upstream "command" --state-dir ./my-state
-npx @sovereign-labs/mcp-proxy --upstream "command" --timeout 60000
-
-# Inspection — read governance state (offline, no proxy needed)
-npx @sovereign-labs/mcp-proxy --receipts
-npx @sovereign-labs/mcp-proxy --receipts --state-dir ./my-state
-npx @sovereign-labs/mcp-proxy --verify
 ```
 
-## Programmatic API
+## What --view Shows
 
-```typescript
-import { createGovernedProxy, startProxy } from '@sovereign-labs/mcp-proxy';
+```
+  RECEIPT LEDGER
+  ===============================================================
+  controller:  311036af...
+  integrity:   verified
+  showing:     10 receipts
+  ---------------------------------------------------------------
 
-// Quick start
-await startProxy({
-  upstream: 'npx -y @modelcontextprotocol/server-filesystem /tmp',
-  stateDir: '.governance',
-  enforcement: 'strict',
-});
+  ok #  1  2026-03-06 14:22:03    42ms  read_file
+           target: /tmp/config.json
+           hash: 8c1a7d3b4e2f9a01...
 
-// Or get a handle for lifecycle control
-const proxy = createGovernedProxy({ upstream: '...', stateDir: '.governance' });
-await proxy.start();
-const state = proxy.getState(); // inspect live state
-await proxy.stop();
+  ok #  2  2026-03-06 14:22:04   103ms  write_file [MUTATION]
+           target: /tmp/config.json
+           hash: 3f7b2c1d8e4a6509...
+
+  !! #  3  2026-03-06 14:22:05    38ms  write_file [MUTATION]
+           target: /tmp/secret.key
+           error: Permission denied
+           hash: 9d2e4f6a1b3c7508...
+
+  -- #  4  2026-03-06 14:22:05     1ms  write_file [MUTATION]
+           target: /tmp/secret.key
+           blocked by: write_file+/tmp/secret.key (known failure)
+           hash: 5a8b3c2d1e4f7609...
+
+  ---------------------------------------------------------------
+  4 receipts  |  3 mutations  |  1 blocked  |  1 errors
+```
+
+## What --verify Shows
+
+```
+  CHAIN VERIFICATION
+  ===============================================================
+
+  receipts:          47
+  chain depth:       47
+  integrity:         all hashes verified
+  controller:        311036af...
+  first hash:        a8ba7720...
+  last hash:         e8aa80ef...
+```
+
+If anyone modifies a receipt after the fact:
+
+```
+  integrity:         TAMPERED at seq 23
+
+  The receipt chain has been tampered with or corrupted.
+  The break was detected at sequence number 23.
+```
+
+## Enforcement Modes
+
+| Mode | On constraint violation | Receipts |
+|------|----------------------|----------|
+| `strict` (default) | Block the call | Always |
+| `advisory` | Log + forward anyway | Always |
+
+Start with advisory to see what the proxy catches without blocking:
+
+```bash
+npx @sovereign-labs/mcp-proxy --wrap filesystem --enforcement advisory
 ```
 
 ## How Constraint Learning Works
@@ -216,15 +202,52 @@ await proxy.stop();
 2. Upstream returns error: "Permission denied"
 3. Proxy fingerprints: tool=write_file, target=/app/config.json, sig=permission_denied
 4. Constraint stored with 1-hour TTL
-5. Agent tries same call again → BLOCKED (strict mode) or annotated (advisory)
-6. Agent tries write_file on a DIFFERENT path → allowed (constraint is target-specific)
+5. Agent tries same call again -> BLOCKED (strict) or annotated (advisory)
+6. Agent tries write_file on a DIFFERENT path -> allowed (target-specific)
 ```
 
-Constraints are scoped to tool + target. A failure writing to `/app/config.json` doesn't block writing to `/app/data.json`.
+## Governance Meta-Tools
+
+The proxy injects tools the agent can call:
+
+| Tool | What it does |
+|------|-------------|
+| `governance_status` | Controller ID, epoch, constraint count, receipt count |
+| `governance_bump_authority` | Advance epoch (invalidates stale sessions) |
+| `governance_declare_intent` | Declare goal + predicates for containment |
+| `governance_clear_intent` | Clear declared intent |
+| `governance_convergence_status` | Loop detection state |
+
+## State Directory
+
+All state lives in `.governance/` (or `--state-dir`):
+
+| File | Contents |
+|------|----------|
+| `receipts.jsonl` | Append-only hash-chained audit trail |
+| `constraints.json` | Failure fingerprints (TTL-based) |
+| `controller.json` | Stable controller UUID |
+| `authority.json` | Authority epoch + session binding |
+
+## Programmatic API
+
+```typescript
+import { startProxy, createGovernedProxy } from '@sovereign-labs/mcp-proxy';
+
+await startProxy({
+  upstream: 'npx -y @modelcontextprotocol/server-filesystem /tmp',
+  stateDir: '.governance',
+  enforcement: 'strict',
+});
+```
+
+## Built On
+
+[@sovereign-labs/kernel](https://www.npmjs.com/package/@sovereign-labs/kernel) — 7 governance invariants as pure functions. The proxy uses the kernel for hash chaining, failure fingerprinting, constraint checking, and authority validation.
 
 ## Requirements
 
-- **Bun** >= 1.0 (for `bunx`) or **Node.js** >= 18 (for `npx`)
+- **Node.js** >= 18 (for `npx`) or **Bun** >= 1.0 (for `bunx`)
 - Any MCP-compatible tool server as upstream
 
 ## License
