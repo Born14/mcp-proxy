@@ -18,6 +18,8 @@
  *   await proxy.start();
  */
 
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
+import { join } from 'path';
 import { createGovernedProxy } from './proxy.js';
 import { loadReceipts, loadConstraints, verifyReceiptChain, loadOrCreateController } from './state.js';
 import type { ProxyConfig, GovernedProxy, ProxyState, ToolCallRecord, ControllerState, AuthorityState, ConstraintEntry, IntentContext, DeclaredPredicate, GroundingContext, ConvergenceTracker, AttributionClass, AttributionMatchDetail, ConvergenceSignal } from './types.js';
@@ -173,7 +175,7 @@ Claude Code config (.mcp.json):
  * Reads .governance/ (or custom stateDir) and prints stats to stdout.
  */
 export function printReceiptsSummary(stateDir: string): void {
-  const { existsSync } = require('fs');
+  
   if (!existsSync(stateDir)) {
     console.log(`No governance state found at ${stateDir}/`);
     console.log(`Run the proxy first to generate receipts.`);
@@ -275,7 +277,7 @@ export function printReceiptsSummary(stateDir: string): void {
  * with outcome, mutation type, target, and governance status.
  */
 export function printView(stateDir: string, filter?: { tool?: string; outcome?: string; limit?: number }): void {
-  const { existsSync } = require('fs');
+  
   if (!existsSync(stateDir)) {
     console.log(`No governance state found at ${stateDir}/`);
     console.log(`Run the proxy first to generate receipts.`);
@@ -369,23 +371,23 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
  * Rewrites the config so the proxy sits in front of the original command.
  */
 export function wrapServer(serverName: string, opts: { config?: string; enforcement?: string; stateDir?: string } = {}): void {
-  const fs = require('fs');
-  const path = require('path');
+  
+  
 
   // Find .mcp.json
   const configPath = opts.config
-    ?? (fs.existsSync('.mcp.json') ? '.mcp.json' : null)
-    ?? (fs.existsSync(path.join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json'))
-      ? path.join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json')
+    ?? (existsSync('.mcp.json') ? '.mcp.json' : null)
+    ?? (existsSync(join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json'))
+      ? join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json')
       : null);
 
-  if (!configPath || !fs.existsSync(configPath)) {
+  if (!configPath || !existsSync(configPath)) {
     console.error('No .mcp.json found in current directory or ~/.claude/mcp.json');
     console.error('Specify path with --config <path>');
     process.exit(1);
   }
 
-  const raw = fs.readFileSync(configPath, 'utf-8');
+  const raw = readFileSync(configPath, 'utf-8');
   const config = JSON.parse(raw);
   const servers = config.mcpServers ?? {};
 
@@ -428,7 +430,7 @@ export function wrapServer(serverName: string, opts: { config?: string; enforcem
   // Stash original for unwrap
   server._unwrap = original;
 
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
   console.log('');
   console.log(`  ✓ Wrapped "${serverName}" with governance`);
@@ -446,21 +448,21 @@ export function wrapServer(serverName: string, opts: { config?: string; enforcem
  * Unwrap a governed MCP server back to its original config.
  */
 export function unwrapServer(serverName: string, opts: { config?: string } = {}): void {
-  const fs = require('fs');
-  const path = require('path');
+  
+  
 
   const configPath = opts.config
-    ?? (fs.existsSync('.mcp.json') ? '.mcp.json' : null)
-    ?? (fs.existsSync(path.join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json'))
-      ? path.join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json')
+    ?? (existsSync('.mcp.json') ? '.mcp.json' : null)
+    ?? (existsSync(join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json'))
+      ? join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.claude', 'mcp.json')
       : null);
 
-  if (!configPath || !fs.existsSync(configPath)) {
+  if (!configPath || !existsSync(configPath)) {
     console.error('No .mcp.json found.');
     process.exit(1);
   }
 
-  const raw = fs.readFileSync(configPath, 'utf-8');
+  const raw = readFileSync(configPath, 'utf-8');
   const config = JSON.parse(raw);
   const servers = config.mcpServers ?? {};
 
@@ -481,7 +483,7 @@ export function unwrapServer(serverName: string, opts: { config?: string } = {})
   server.args = server._unwrap.args;
   delete server._unwrap;
 
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
   console.log('');
   console.log(`  ✓ Unwrapped "${serverName}" — governance removed`);
@@ -494,7 +496,7 @@ export function unwrapServer(serverName: string, opts: { config?: string } = {})
  * Verify the receipt chain integrity and print results.
  */
 export function printVerify(stateDir: string): void {
-  const { existsSync } = require('fs');
+  
   if (!existsSync(stateDir)) {
     console.log(`No governance state found at ${stateDir}/`);
     return;
@@ -534,8 +536,20 @@ export function printVerify(stateDir: string): void {
 // CLI ENTRY — Only runs when executed directly (not imported)
 // =============================================================================
 
-// Detect if running as CLI entry point
-const isMainModule = typeof Bun !== 'undefined' && Bun.main === import.meta.path;
+// Detect if running as CLI entry point (works in both Bun and Node)
+const isMainModule = (() => {
+  // Bun: direct comparison
+  if (typeof Bun !== 'undefined') return Bun.main === import.meta.path;
+  // Node ESM: compare import.meta.url with argv[1]
+  try {
+    const argv1 = process.argv[1];
+    if (!argv1) return false;
+    const moduleUrl = import.meta.url;
+    // Normalize argv[1] to file:// URL for comparison
+    const scriptUrl = 'file:///' + argv1.replace(/\\/g, '/');
+    return moduleUrl === scriptUrl;
+  } catch { return false; }
+})();
 
 if (isMainModule) {
   const args = process.argv.slice(2);
@@ -601,8 +615,8 @@ if (isMainModule) {
   // Debug log for MCP server startup diagnosis (stderr is invisible in Claude Code)
   const debugLog = (msg: string) => {
     try {
-      const fs = require('fs');
-      fs.appendFileSync(
+      
+      appendFileSync(
         (config?.stateDir ?? '.governance') + '/startup.log',
         `[${new Date().toISOString()}] ${msg}\n`
       );
