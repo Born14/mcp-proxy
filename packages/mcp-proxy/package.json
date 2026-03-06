@@ -1,0 +1,36 @@
+{
+  "name": "@sovereign-labs/mcp-proxy",
+  "version": "0.2.0",
+  "description": "Governed transport for MCP. Structural invariants for any tool server.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "mcp-proxy": "./dist/index.js" },
+  "exports": {
+    ".": { "bun": "./src/index.ts", "import": "./dist/index.js", "types": "./dist/index.d.ts" },
+    "./types": { "bun": "./src/types.ts", "import": "./dist/types.js", "types": "./dist/types.d.ts" }
+  },
+  "scripts": {
+    "test": "bun test tests/",
+    "build": "tsc && sed -i '1s|#!/usr/bin/env bun|#!/usr/bin/env node|' dist/index.js",
+    "prepublishOnly": "bun run build && bun test tests/"
+  },
+  "files": ["dist/", "src/", "README.md"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Born14/mcp-proxy",
+    "directory": "packages/mcp-proxy"
+  },
+  "keywords": [
+    "mcp", "audit-trail", "governance", "ai-agents",
+    "tool-use", "receipts", "tamper-evident", "proxy"
+  ],
+  "dependencies": {
+    "@sovereign-labs/kernel": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}

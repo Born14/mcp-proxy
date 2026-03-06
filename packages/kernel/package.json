@@ -1,0 +1,40 @@
+{
+  "name": "@sovereign-labs/kernel",
+  "version": "0.2.0",
+  "description": "Governance kernel for autonomous agents. 11 structural invariants. 16-gate execution spine.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "bun": "./src/index.ts", "import": "./dist/index.js", "types": "./dist/index.d.ts" },
+    "./types": { "bun": "./src/types.ts", "import": "./dist/types.js", "types": "./dist/types.d.ts" },
+    "./mock": { "bun": "./src/adapters/mock-adapter.ts", "import": "./dist/adapters/mock-adapter.js", "types": "./dist/adapters/mock-adapter.d.ts" },
+    "./pure": { "bun": "./src/pure/classification-heuristics.ts", "import": "./dist/pure/classification-heuristics.js", "types": "./dist/pure/classification-heuristics.d.ts" },
+    "./attribution": { "bun": "./src/pure/attribution-heuristics.ts", "import": "./dist/pure/attribution-heuristics.js", "types": "./dist/pure/attribution-heuristics.d.ts" }
+  },
+  "scripts": {
+    "test": "bun test tests/",
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "files": ["dist/", "src/", "README.md"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Born14/mcp-proxy",
+    "directory": "packages/kernel"
+  },
+  "keywords": [
+    "governance",
+    "ai-agents",
+    "verification",
+    "invariants",
+    "mcp",
+    "autonomous-agents",
+    "safety"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}
