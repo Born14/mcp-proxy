@@ -167,6 +167,14 @@ export interface ToolCallRecord {
   /** Wall-clock duration in milliseconds */
   durationMs: number;
 
+  // --- Human-readable summary ---
+
+  /** Short title: "Read configuration file" or "Write server code [BLOCKED]" */
+  title?: string;
+
+  /** One-sentence description: "Examined config.json to understand the current state." */
+  summary?: string;
+
   // --- Hash chain ---
 
   /** SHA-256 of previous receipt ('genesis' for first) */

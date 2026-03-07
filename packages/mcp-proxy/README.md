@@ -12,14 +12,16 @@ npx @sovereign-labs/mcp-proxy --wrap filesystem
 
 # 2. Use Claude Code normally — every tool call is now receipted
 
-# 3. See what happened
-npx @sovereign-labs/mcp-proxy --view --state-dir .governance-filesystem
+# 3. See what happened (plain English)
+npx @sovereign-labs/mcp-proxy --explain --state-dir .governance-filesystem
 
 # 4. Verify the record is intact
 npx @sovereign-labs/mcp-proxy --verify --state-dir .governance-filesystem
 ```
 
 That's it. Your agent doesn't know the proxy exists. Your MCP server doesn't know either. But now you have proof.
+
+Step 3 gives you a plain-English summary of what the agent did. Use `--view` instead for the full per-receipt timeline.
 
 ## The Problem
 
@@ -120,6 +122,14 @@ npx @sovereign-labs/mcp-proxy --view --tool write  # Filter by tool name
 npx @sovereign-labs/mcp-proxy --view --outcome error  # Show only failures
 npx @sovereign-labs/mcp-proxy --receipts          # Session summary
 npx @sovereign-labs/mcp-proxy --verify            # Tamper detection
+npx @sovereign-labs/mcp-proxy --explain           # Plain-English summary
+
+# Explain with LLM enhancement (optional — any provider)
+npx @sovereign-labs/mcp-proxy --explain --llm openai --api-key sk-...
+npx @sovereign-labs/mcp-proxy --explain --llm anthropic --api-key sk-ant-...
+npx @sovereign-labs/mcp-proxy --explain --llm gemini --api-key AIza...
+npx @sovereign-labs/mcp-proxy --explain --llm ollama              # localhost
+npx @sovereign-labs/mcp-proxy --explain --llm ollama --model llama3.2
 
 # Proxy mode
 npx @sovereign-labs/mcp-proxy --upstream "command"
@@ -181,6 +191,61 @@ If anyone modifies a receipt after the fact:
   The receipt chain has been tampered with or corrupted.
   The break was detected at sequence number 23.
 ```
+
+## What --explain Shows
+
+A plain-English summary of what the agent did, generated from receipt data — no LLM required.
+
+```
+  WHAT HAPPENED
+  ───────────────────────────────────────────────────────────────
+
+  Purpose:      Attempt operation (with failure prevention)
+
+  The agent examined several resources to understand the current
+  state. It made changes across 3 resources, primarily the
+  configuration file, the server code and a source file. It
+  encountered errors accessing a sensitive file (was denied
+  access). The proxy blocked 1 repeated operation to prevent
+  wasted retries.
+
+  Impact:       5 reads  ·  3 changes  ·  1 blocked  ·  1 error
+
+  Bottom line:  One operation failed, and the proxy blocked 1
+                retry to prevent repeating the same mistake.
+
+  This summary was generated from verifiable execution receipts.
+  Run --verify to confirm the record has not been altered.
+```
+
+For large sessions (hundreds of calls), it automatically switches to aggregate mode:
+
+```
+  Purpose:      Update configuration and apply changes
+
+  The agent examined many resources to understand the current
+  state. It made changes across 20 resources, primarily the
+  football, the clear and the message. It restarted services
+  so changes would take effect. It encountered 13 errors
+  across 4 resources.
+
+  Impact:       799 reads  ·  73 changes  ·  13 errors
+
+  Bottom line:  859 operations succeeded, but 13 operations failed.
+```
+
+### LLM Enhancement (optional)
+
+Pass `--llm` to get a richer narrative from your own LLM provider. The heuristic summary always works as a fallback.
+
+```bash
+npx @sovereign-labs/mcp-proxy --explain --llm openai --api-key sk-...
+npx @sovereign-labs/mcp-proxy --explain --llm anthropic --api-key sk-ant-...
+npx @sovereign-labs/mcp-proxy --explain --llm gemini --api-key AIza...
+npx @sovereign-labs/mcp-proxy --explain --llm ollama
+```
+
+The LLM receives a compressed summary of receipts (not raw data) and produces a narrative. If the LLM call fails, the heuristic output is shown instead. No dependencies — just HTTP calls.
 
 ## Enforcement Modes
 

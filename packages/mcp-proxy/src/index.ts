@@ -22,6 +22,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createGovernedProxy } from './proxy.js';
 import { loadReceipts, loadConstraints, verifyReceiptChain, loadOrCreateController } from './state.js';
+import { generateNarrative, generateNarrativeWithLLM, formatNarrative, createOllamaProvider, createOpenAIProvider, createGeminiProvider, createAnthropicProvider } from './explain.js';
 import type { ProxyConfig, GovernedProxy, ProxyState, ToolCallRecord, ControllerState, AuthorityState, ConstraintEntry, IntentContext, DeclaredPredicate, GroundingContext, ConvergenceTracker, AttributionClass, AttributionMatchDetail, ConvergenceSignal } from './types.js';
 
 // =============================================================================
@@ -32,6 +33,8 @@ export { createGovernedProxy } from './proxy.js';
 export { acquireLock, releaseLock, checkLock, StateDirLockError, computeIntentHash } from './state.js';
 export { computeToolTarget, attributeToolCallHeuristic, annotateGrounding, checkConvergence, createConvergenceTracker, extractProxySignature } from './governance.js';
 export { classifyMutationType, classifyFromSchema, extractTarget, seedFromFailure, cacheToolSchemas, getCachedSchema, clearSchemaCache, normalizeErrorText } from './fingerprint.js';
+export { generateNarrative, generateNarrativeWithLLM, formatNarrative, compressForLLM, buildLLMPrompt, generateReceiptTitle, generateReceiptSummary, createOllamaProvider, createOpenAIProvider, createGeminiProvider, createAnthropicProvider } from './explain.js';
+export type { Narrative, LLMProvider } from './explain.js';
 export type {
   ProxyConfig,
   GovernedProxy,
@@ -121,6 +124,7 @@ Usage:
   npx @sovereign-labs/mcp-proxy --wrap <server>   [--config <path>] [--enforcement <mode>]
   npx @sovereign-labs/mcp-proxy --unwrap <server> [--config <path>]
   npx @sovereign-labs/mcp-proxy --view     [--state-dir <dir>] [--tool <name>] [--outcome <type>] [--limit <n>]
+  npx @sovereign-labs/mcp-proxy --explain  [--state-dir <dir>] [--llm <provider>]
   npx @sovereign-labs/mcp-proxy --receipts [--state-dir <dir>]
   npx @sovereign-labs/mcp-proxy --verify  [--state-dir <dir>]
 
@@ -137,8 +141,14 @@ Setup commands (modify .mcp.json):
 
 Inspection commands (offline, no proxy needed):
   --view                  Detailed per-receipt timeline (the proof you can show someone)
+  --explain               Plain-language summary of what the agent did
   --receipts              Show session summary: tool calls, mutations, blocked, constraints
   --verify                Verify receipt chain integrity (tamper detection)
+
+Explain options:
+  --llm <provider>        Enhance summary with LLM (ollama, openai, anthropic, gemini)
+  --api-key <key>         API key for cloud LLM (or set EXPLAIN_API_KEY env var)
+  --model <name>          Model name (provider-specific, uses sensible defaults)
 
 View filters:
   --tool <name>           Filter by tool name (partial match)
@@ -151,6 +161,9 @@ Examples:
   npx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-filesystem /tmp"
   npx @sovereign-labs/mcp-proxy --view
   npx @sovereign-labs/mcp-proxy --view --tool sovereign_submit --outcome success
+  npx @sovereign-labs/mcp-proxy --explain
+  npx @sovereign-labs/mcp-proxy --explain --llm openai --api-key sk-...
+  npx @sovereign-labs/mcp-proxy --explain --llm ollama --model qwen3:4b
   npx @sovereign-labs/mcp-proxy --receipts
   npx @sovereign-labs/mcp-proxy --verify
 
@@ -336,6 +349,11 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
     // Main line
     console.log(`  ${icon} #${String(r.seq).padStart(3)}  ${time}  ${dur.padStart(7)}  ${r.toolName}${badge}${attr}`);
 
+    // Title (human-readable, if present)
+    if (r.title) {
+      console.log(`           ${r.title}`);
+    }
+
     // Target (if different from tool name)
     if (r.target && r.target !== r.toolName) {
       console.log(`           target: ${r.target}`);
@@ -364,6 +382,10 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
   const errors = shown.filter(r => r.outcome === 'error').length;
   console.log(`  ${shown.length} receipts  |  ${mutations} mutations  |  ${blocked} blocked  |  ${errors} errors`);
   console.log('');
+
+  // Append human-readable narrative
+  const narrative = generateNarrative(shown);
+  console.log(formatNarrative(narrative));
 }
 
 /**
@@ -532,6 +554,79 @@ export function printVerify(stateDir: string): void {
   }
 }
 
+/**
+ * Print a plain-language explanation of what the agent did.
+ * Heuristic by default, enhanced with LLM if --llm is provided.
+ */
+export async function printExplain(
+  stateDir: string,
+  opts: { llm?: string; apiKey?: string; model?: string } = {},
+): Promise<void> {
+
+  if (!existsSync(stateDir)) {
+    console.log(`No governance state found at ${stateDir}/`);
+    console.log(`Run the proxy first to generate receipts.`);
+    return;
+  }
+
+  const receipts = loadReceipts(stateDir);
+  if (receipts.length === 0) {
+    console.log(`No receipts in ${stateDir}/receipts.jsonl`);
+    return;
+  }
+
+  let narrative;
+
+  if (opts.llm) {
+    const provider = resolveLLMProvider(opts.llm, opts.apiKey, opts.model);
+    if (provider) {
+      console.log(`  Using ${provider.name} for enhanced summary...\n`);
+      narrative = await generateNarrativeWithLLM(receipts, provider);
+    } else {
+      narrative = generateNarrative(receipts);
+    }
+  } else {
+    narrative = generateNarrative(receipts);
+  }
+
+  console.log(formatNarrative(narrative));
+}
+
+/**
+ * Resolve an LLM provider from CLI flags.
+ */
+function resolveLLMProvider(
+  name: string,
+  apiKey?: string,
+  model?: string,
+): ReturnType<typeof createOllamaProvider> | null {
+  switch (name.toLowerCase()) {
+    case 'ollama':
+      return createOllamaProvider(model ?? 'llama3.2');
+    case 'openai':
+      if (!apiKey) {
+        console.error('  --llm openai requires --api-key or EXPLAIN_API_KEY env var');
+        return null;
+      }
+      return createOpenAIProvider(apiKey, model ?? 'gpt-4o-mini');
+    case 'anthropic':
+      if (!apiKey) {
+        console.error('  --llm anthropic requires --api-key or EXPLAIN_API_KEY env var');
+        return null;
+      }
+      return createAnthropicProvider(apiKey, model ?? 'claude-haiku-4-5-20251001');
+    case 'gemini':
+      if (!apiKey) {
+        console.error('  --llm gemini requires --api-key or EXPLAIN_API_KEY env var');
+        return null;
+      }
+      return createGeminiProvider(apiKey, model ?? 'gemini-2.0-flash');
+    default:
+      console.error(`  Unknown LLM provider: ${name}. Use ollama, openai, anthropic, or gemini.`);
+      return null;
+  }
+}
+
 // =============================================================================
 // CLI ENTRY — Only runs when executed directly (not imported)
 // =============================================================================
@@ -602,7 +697,21 @@ if (isMainModule) {
     process.exit(0);
   }
 
-  if (args.includes('--receipts')) {
+  if (args.includes('--explain')) {
+    const llmIdx = args.indexOf('--llm');
+    const llmProvider = llmIdx !== -1 ? args[llmIdx + 1] : undefined;
+    const apiKeyIdx = args.indexOf('--api-key');
+    const apiKey = apiKeyIdx !== -1 ? args[apiKeyIdx + 1] : process.env.EXPLAIN_API_KEY;
+    const modelIdx = args.indexOf('--model');
+    const modelName = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
+
+    printExplain(stateDir, { llm: llmProvider, apiKey, model: modelName })
+      .then(() => process.exit(0))
+      .catch(err => {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      });
+  } else if (args.includes('--receipts')) {
     printReceiptsSummary(stateDir);
     process.exit(0);
   }

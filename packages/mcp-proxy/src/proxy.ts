@@ -45,6 +45,7 @@ import {
   extractProxySignature,
 } from './governance.js';
 import { isMetaTool, handleMetaTool, META_TOOL_DEFS } from './meta-tools.js';
+import { generateReceiptTitle, generateReceiptSummary } from './explain.js';
 import type {
   ProxyConfig,
   ProxyState,
@@ -461,6 +462,9 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
    * Append receipt to ledger, update state, and pin genesis hash on first receipt.
    */
   function recordReceipt(record: Omit<ToolCallRecord, 'hash'>): ToolCallRecord {
+    // Generate human-readable title + summary before hashing
+    record.title = generateReceiptTitle(record);
+    record.summary = generateReceiptSummary(record);
     const receipt = appendReceipt(stateDir, record);
     state.lastReceiptHash = receipt.hash;
     // Pin genesis trust anchor on the very first receipt
