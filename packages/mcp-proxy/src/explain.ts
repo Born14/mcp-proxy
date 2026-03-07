@@ -664,20 +664,25 @@ export function generateNarrative(receipts: ToolCallRecord[]): Narrative {
  * Format a narrative for terminal output.
  */
 export function formatNarrative(narrative: Narrative): string {
+  const isTTY = process.stdout.isTTY ?? false;
+  const bold = (s: string) => isTTY ? `\x1b[1m${s}\x1b[0m` : s;
+  const dim = (s: string) => isTTY ? `\x1b[2m${s}\x1b[0m` : s;
+  const cyan = (s: string) => isTTY ? `\x1b[36m${s}\x1b[0m` : s;
+
   const lines: string[] = [
     '',
-    '  WHAT HAPPENED',
-    '  ───────────────────────────────────────────────────────────────',
+    `  ${bold('WHAT HAPPENED')}`,
+    `  ${dim('───────────────────────────────────────────────────────────────')}`,
     '',
-    `  Purpose:      ${narrative.purpose}`,
+    `  ${cyan('Purpose:')}      ${narrative.purpose}`,
     '',
     `  ${narrative.summary}`,
     '',
-    `  Impact:       ${narrative.impact}`,
+    `  ${cyan('Impact:')}       ${narrative.impact}`,
     '',
-    `  Bottom line:  ${narrative.bottomLine}`,
+    `  ${cyan('Bottom line:')}  ${narrative.bottomLine}`,
     '',
-    `  ${narrative.footer.split('\n').join('\n  ')}`,
+    `  ${dim(narrative.footer.split('\n').join('\n  '))}`,
     '',
   ];
 

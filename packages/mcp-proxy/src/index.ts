@@ -23,6 +23,7 @@ import { join } from 'path';
 import { createGovernedProxy } from './proxy.js';
 import { loadReceipts, loadConstraints, verifyReceiptChain, loadOrCreateController } from './state.js';
 import { generateNarrative, generateNarrativeWithLLM, formatNarrative, createOllamaProvider, createOpenAIProvider, createGeminiProvider, createAnthropicProvider } from './explain.js';
+import { runDemo } from './demo.js';
 import type { ProxyConfig, GovernedProxy, ProxyState, ToolCallRecord, ControllerState, AuthorityState, ConstraintEntry, IntentContext, DeclaredPredicate, GroundingContext, ConvergenceTracker, AttributionClass, AttributionMatchDetail, ConvergenceSignal } from './types.js';
 
 // =============================================================================
@@ -140,6 +141,7 @@ Setup commands (modify .mcp.json):
   --config <path>         Path to .mcp.json (default: ./.mcp.json or ~/.claude/mcp.json)
 
 Inspection commands (offline, no proxy needed):
+  --demo                  Interactive demo — see governance in action (no config needed)
   --view                  Detailed per-receipt timeline (the proof you can show someone)
   --explain               Plain-language summary of what the agent did
   --receipts              Show session summary: tool calls, mutations, blocked, constraints
@@ -178,6 +180,21 @@ Claude Code config (.mcp.json):
   }
 `);
 }
+
+// =============================================================================
+// ANSI COLORS — Auto-disabled when piped (no TTY)
+// =============================================================================
+
+const isTTY = process.stdout.isTTY ?? false;
+const c = {
+  green:   (s: string) => isTTY ? `\x1b[32m${s}\x1b[0m` : s,
+  red:     (s: string) => isTTY ? `\x1b[31m${s}\x1b[0m` : s,
+  yellow:  (s: string) => isTTY ? `\x1b[33m${s}\x1b[0m` : s,
+  cyan:    (s: string) => isTTY ? `\x1b[36m${s}\x1b[0m` : s,
+  dim:     (s: string) => isTTY ? `\x1b[2m${s}\x1b[0m` : s,
+  bold:    (s: string) => isTTY ? `\x1b[1m${s}\x1b[0m` : s,
+  magenta: (s: string) => isTTY ? `\x1b[35m${s}\x1b[0m` : s,
+};
 
 // =============================================================================
 // OFFLINE COMMANDS — Read governance state without starting proxy
@@ -239,18 +256,18 @@ export function printReceiptsSummary(stateDir: string): void {
 
   // Print summary
   console.log('');
-  console.log('  SESSION SUMMARY');
-  console.log('  ═══════════════════════════════════════');
+  console.log(`  ${c.bold('SESSION SUMMARY')}`);
+  console.log(`  ${c.dim('═══════════════════════════════════════')}`);
   console.log('');
-  console.log(`  receipts:          ${receipts.length}`);
+  console.log(`  receipts:          ${c.bold(String(receipts.length))}`);
   console.log(`  duration:          ${durationStr}`);
-  console.log(`  chain integrity:   ${chain.intact ? '✓ verified' : `✗ broken at seq ${chain.brokenAt}`}`);
+  console.log(`  chain integrity:   ${chain.intact ? c.green('✓ verified') : c.red(`✗ broken at seq ${chain.brokenAt}`)}`);
   console.log('');
-  console.log(`  mutations:         ${mutations}`);
+  console.log(`  mutations:         ${mutations > 0 ? c.yellow(String(mutations)) : '0'}`);
   console.log(`  readonly:          ${readonly}`);
-  console.log(`  blocked:           ${blocked}`);
-  console.log(`  errors:            ${errors}`);
-  console.log(`  succeeded:         ${succeeded}`);
+  console.log(`  blocked:           ${blocked > 0 ? c.red(String(blocked)) : '0'}`);
+  console.log(`  errors:            ${errors > 0 ? c.red(String(errors)) : '0'}`);
+  console.log(`  succeeded:         ${succeeded > 0 ? c.green(String(succeeded)) : '0'}`);
   console.log('');
 
   if (constraints.length > 0) {
@@ -262,25 +279,25 @@ export function printReceiptsSummary(stateDir: string): void {
 
   if (direct + scaffolding + unexplained > 0) {
     console.log('');
-    console.log('  containment:');
-    console.log(`    direct:          ${direct}`);
-    console.log(`    scaffolding:     ${scaffolding}`);
-    console.log(`    unexplained:     ${unexplained}`);
+    console.log(`  ${c.bold('containment:')}`);
+    console.log(`    direct:          ${c.green(String(direct))}`);
+    console.log(`    scaffolding:     ${c.cyan(String(scaffolding))}`);
+    console.log(`    unexplained:     ${unexplained > 0 ? c.red(String(unexplained)) : '0'}`);
   }
 
   console.log('');
-  console.log('  tools:');
+  console.log(`  ${c.bold('tools:')}`);
   const sorted = [...tools.entries()].sort((a, b) => b[1] - a[1]);
   for (const [name, count] of sorted.slice(0, 10)) {
-    console.log(`    ${name.padEnd(30)} ${count}`);
+    console.log(`    ${c.cyan(name.padEnd(30))} ${count}`);
   }
   if (sorted.length > 10) {
-    console.log(`    ... and ${sorted.length - 10} more`);
+    console.log(c.dim(`    ... and ${sorted.length - 10} more`));
   }
 
   console.log('');
-  console.log(`  last hash:         ${last.hash.slice(0, 16)}...`);
-  console.log(`  state dir:         ${stateDir}/`);
+  console.log(`  last hash:         ${c.dim(last.hash.slice(0, 16) + '...')}`);
+  console.log(`  state dir:         ${c.dim(stateDir + '/')}`);
   console.log('');
 }
 
@@ -317,12 +334,12 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
 
   // Header
   console.log('');
-  console.log('  RECEIPT LEDGER');
-  console.log('  ═══════════════════════════════════════════════════════════════');
-  console.log(`  controller:  ${controller.id.slice(0, 8)}...`);
-  console.log(`  integrity:   ${chain.intact ? '✓ verified' : `✗ TAMPERED at seq ${chain.brokenAt}`}`);
-  console.log(`  showing:     ${receipts.length} receipts`);
-  console.log('  ───────────────────────────────────────────────────────────────');
+  console.log(`  ${c.bold('RECEIPT LEDGER')}`);
+  console.log(`  ${c.dim('═══════════════════════════════════════════════════════════════')}`);
+  console.log(`  controller:  ${c.dim(controller.id.slice(0, 8) + '...')}`);
+  console.log(`  integrity:   ${chain.intact ? c.green('✓ verified') : c.red(`✗ TAMPERED at seq ${chain.brokenAt}`)}`);
+  console.log(`  showing:     ${c.bold(String(receipts.length))} receipts`);
+  console.log(`  ${c.dim('───────────────────────────────────────────────────────────────')}`);
   console.log('');
 
   // Apply limit (show most recent)
@@ -338,16 +355,17 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
     const dur = r.durationMs < 1000 ? `${r.durationMs}ms` : `${(r.durationMs / 1000).toFixed(1)}s`;
 
     // Outcome indicator
-    const icon = r.outcome === 'success' ? '✓' : r.outcome === 'blocked' ? '⊘' : '✗';
+    const icon = r.outcome === 'success' ? c.green('✓') : r.outcome === 'blocked' ? c.yellow('⊘') : c.red('✗');
 
     // Mutation badge
-    const badge = r.mutationType === 'mutating' ? ' [MUTATION]' : '';
+    const badge = r.mutationType === 'mutating' ? c.yellow(' [MUTATION]') : '';
 
     // Attribution
-    const attr = r.attribution ? ` (${r.attribution})` : '';
+    const attrColor = r.attribution === 'direct' ? c.green : r.attribution === 'unexplained' ? c.red : c.dim;
+    const attr = r.attribution ? ` ${attrColor('(' + r.attribution + ')')}` : '';
 
     // Main line
-    console.log(`  ${icon} #${String(r.seq).padStart(3)}  ${time}  ${dur.padStart(7)}  ${r.toolName}${badge}${attr}`);
+    console.log(`  ${icon} ${c.dim('#' + String(r.seq).padStart(3))}  ${c.dim(time)}  ${dur.padStart(7)}  ${c.cyan(r.toolName)}${badge}${attr}`);
 
     // Title (human-readable, if present)
     if (r.title) {
@@ -356,31 +374,31 @@ export function printView(stateDir: string, filter?: { tool?: string; outcome?: 
 
     // Target (if different from tool name)
     if (r.target && r.target !== r.toolName) {
-      console.log(`           target: ${r.target}`);
+      console.log(`           target: ${c.dim(r.target)}`);
     }
 
     // Blocked reason
     if (r.outcome === 'blocked' && r.constraintCheck && !r.constraintCheck.passed) {
-      console.log(`           blocked by: ${r.constraintCheck.blockedBy ?? 'constraint'}`);
+      console.log(`           ${c.yellow('blocked by:')} ${r.constraintCheck.blockedBy ?? 'constraint'}`);
     }
 
     // Error
     if (r.outcome === 'error' && r.error) {
       const errShort = r.error.length > 80 ? r.error.slice(0, 77) + '...' : r.error;
-      console.log(`           error: ${errShort}`);
+      console.log(`           ${c.red('error:')} ${errShort}`);
     }
 
     // Hash (truncated)
-    console.log(`           hash: ${r.hash.slice(0, 16)}...`);
+    console.log(`           ${c.dim('hash: ' + r.hash.slice(0, 16) + '...')}`);
     console.log('');
   }
 
   // Footer
-  console.log('  ───────────────────────────────────────────────────────────────');
+  console.log(`  ${c.dim('───────────────────────────────────────────────────────────────')}`);
   const mutations = shown.filter(r => r.mutationType === 'mutating').length;
   const blocked = shown.filter(r => r.outcome === 'blocked').length;
   const errors = shown.filter(r => r.outcome === 'error').length;
-  console.log(`  ${shown.length} receipts  |  ${mutations} mutations  |  ${blocked} blocked  |  ${errors} errors`);
+  console.log(`  ${c.bold(String(shown.length))} receipts  |  ${mutations > 0 ? c.yellow(String(mutations)) : '0'} mutations  |  ${blocked > 0 ? c.red(String(blocked)) : '0'} blocked  |  ${errors > 0 ? c.red(String(errors)) : '0'} errors`);
   console.log('');
 
   // Append human-readable narrative
@@ -455,14 +473,14 @@ export function wrapServer(serverName: string, opts: { config?: string; enforcem
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
   console.log('');
-  console.log(`  ✓ Wrapped "${serverName}" with governance`);
+  console.log(`  ${c.green('✓')} Wrapped "${c.bold(serverName)}" with governance`);
   console.log('');
-  console.log(`  enforcement:  ${enforcement}`);
-  console.log(`  state dir:    ${govStateDir}/`);
-  console.log(`  config:       ${configPath}`);
+  console.log(`  enforcement:  ${c.cyan(enforcement)}`);
+  console.log(`  state dir:    ${c.dim(govStateDir + '/')}`);
+  console.log(`  config:       ${c.dim(configPath)}`);
   console.log('');
   console.log(`  Restart your MCP client to pick up the change.`);
-  console.log(`  Run --unwrap ${serverName} to remove governance.`);
+  console.log(`  Run ${c.dim('--unwrap ' + serverName)} to remove governance.`);
   console.log('');
 }
 
@@ -508,7 +526,7 @@ export function unwrapServer(serverName: string, opts: { config?: string } = {})
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
   console.log('');
-  console.log(`  ✓ Unwrapped "${serverName}" — governance removed`);
+  console.log(`  ${c.green('✓')} Unwrapped "${c.bold(serverName)}" — governance removed`);
   console.log(`  Receipts preserved in state dir.`);
   console.log(`  Restart your MCP client to pick up the change.`);
   console.log('');
@@ -535,20 +553,20 @@ export function printVerify(stateDir: string): void {
   const chain = verifyReceiptChain(stateDir);
 
   console.log('');
-  console.log('  CHAIN VERIFICATION');
-  console.log('  ═══════════════════════════════════════');
+  console.log(`  ${c.bold('CHAIN VERIFICATION')}`);
+  console.log(`  ${c.dim('═══════════════════════════════════════')}`);
   console.log('');
-  console.log(`  receipts:          ${receipts.length}`);
+  console.log(`  receipts:          ${c.bold(String(receipts.length))}`);
   console.log(`  chain depth:       ${chain.depth}`);
-  console.log(`  integrity:         ${chain.intact ? '✓ all hashes verified' : `✗ TAMPERED at seq ${chain.brokenAt}`}`);
-  console.log(`  controller:        ${controller.id.slice(0, 8)}...`);
-  console.log(`  first hash:        ${receipts[0].hash.slice(0, 16)}...`);
-  console.log(`  last hash:         ${receipts[receipts.length - 1].hash.slice(0, 16)}...`);
+  console.log(`  integrity:         ${chain.intact ? c.green('✓ all hashes verified') : c.red(`✗ TAMPERED at seq ${chain.brokenAt}`)}`);
+  console.log(`  controller:        ${c.dim(controller.id.slice(0, 8) + '...')}`);
+  console.log(`  first hash:        ${c.dim(receipts[0].hash.slice(0, 16) + '...')}`);
+  console.log(`  last hash:         ${c.dim(receipts[receipts.length - 1].hash.slice(0, 16) + '...')}`);
   console.log('');
 
   if (!chain.intact) {
-    console.log('  ⚠ The receipt chain has been tampered with or corrupted.');
-    console.log(`  The break was detected at sequence number ${chain.brokenAt}.`);
+    console.log(`  ${c.red('⚠ The receipt chain has been tampered with or corrupted.')}`);
+    console.log(`  ${c.red(`The break was detected at sequence number ${chain.brokenAt}.`)}`);
     console.log('');
     process.exit(1);
   }
@@ -717,6 +735,13 @@ if (isMainModule) {
   } else if (args.includes('--verify')) {
     printVerify(stateDir);
     process.exit(0);
+  } else if (args.includes('--demo')) {
+    runDemo()
+      .then(() => process.exit(0))
+      .catch(err => {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      });
   } else {
 
   // Debug log for MCP server startup diagnosis (stderr is invisible in Claude Code)
