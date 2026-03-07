@@ -714,12 +714,10 @@ if (isMainModule) {
   } else if (args.includes('--receipts')) {
     printReceiptsSummary(stateDir);
     process.exit(0);
-  }
-
-  if (args.includes('--verify')) {
+  } else if (args.includes('--verify')) {
     printVerify(stateDir);
     process.exit(0);
-  }
+  } else {
 
   // Debug log for MCP server startup diagnosis (stderr is invisible in Claude Code)
   const debugLog = (msg: string) => {
@@ -752,4 +750,6 @@ if (isMainModule) {
         process.exit(1);
       });
   }
+
+  } // end else (proxy startup — only when no CLI command handled)
 }
