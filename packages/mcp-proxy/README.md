@@ -4,6 +4,14 @@
 
 A drop-in governance proxy for any MCP tool server. One command to add tamper-evident receipts, failure memory, and authority tracking.
 
+## See It In Action (1 command)
+
+```bash
+npx @sovereign-labs/mcp-proxy --demo
+```
+
+No config. No server. Watch governance happen: receipts, failure memory, automatic blocking, hash chain verification — all in 5 seconds.
+
 ## The Trust Demo (4 commands)
 
 ```bash
@@ -115,6 +123,9 @@ npx @sovereign-labs/mcp-proxy --upstream "npx -y @modelcontextprotocol/server-fi
 # Setup
 npx @sovereign-labs/mcp-proxy --wrap <server>     # Govern an existing MCP server
 npx @sovereign-labs/mcp-proxy --unwrap <server>   # Restore original config
+
+# Try it
+npx @sovereign-labs/mcp-proxy --demo              # Interactive demo (no config needed)
 
 # Inspection (offline, no proxy needed)
 npx @sovereign-labs/mcp-proxy --view              # Per-receipt timeline
