@@ -315,6 +315,10 @@ await startProxy({
 - **Node.js** >= 18 (for `npx`) or **Bun** >= 1.0 (for `bunx`)
 - Any MCP-compatible tool server as upstream
 
+## Questions or bugs?
+
+Open an [issue](https://github.com/Born14/mcp-proxy/issues) or email vibestarter26@outlook.com.
+
 ## License
 
 MIT
