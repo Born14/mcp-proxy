@@ -24,6 +24,7 @@ import { createGovernedProxy } from './proxy.js';
 import { loadReceipts, loadConstraints, verifyReceiptChain, loadOrCreateController } from './state.js';
 import { generateNarrative, generateNarrativeWithLLM, formatNarrative, createOllamaProvider, createOpenAIProvider, createGeminiProvider, createAnthropicProvider } from './explain.js';
 import { runDemo } from './demo.js';
+import { printReplay } from './replay.js';
 import type { ProxyConfig, GovernedProxy, ProxyState, ToolCallRecord, ControllerState, AuthorityState, ConstraintEntry, IntentContext, DeclaredPredicate, GroundingContext, ConvergenceTracker, AttributionClass, AttributionMatchDetail, ConvergenceSignal } from './types.js';
 
 // =============================================================================
@@ -36,6 +37,33 @@ export { computeToolTarget, attributeToolCallHeuristic, annotateGrounding, check
 export { classifyMutationType, classifyFromSchema, extractTarget, seedFromFailure, cacheToolSchemas, getCachedSchema, clearSchemaCache, normalizeErrorText } from './fingerprint.js';
 export { generateNarrative, generateNarrativeWithLLM, formatNarrative, compressForLLM, buildLLMPrompt, generateReceiptTitle, generateReceiptSummary, createOllamaProvider, createOpenAIProvider, createGeminiProvider, createAnthropicProvider } from './explain.js';
 export type { Narrative, LLMProvider } from './explain.js';
+export { createBudgetState, checkBudget, recordCall, recordBlocked, remainingCalls } from './budget.js';
+export type { BudgetState } from './budget.js';
+export { validateToolArgs } from './schema-check.js';
+export type { SchemaCheckResult, SchemaMode } from './schema-check.js';
+export { createLoopDetector, recordAndCheck, classifyError, getLoopStats } from './loop-detect.js';
+export type { LoopDetector, LoopDetectorConfig, LoopCheckResult } from './loop-detect.js';
+export { createSessionStats, recordOutcome, formatExitSummary } from './summary.js';
+export type { SessionStats } from './summary.js';
+export { printReplay } from './replay.js';
+export { classifyFailureKind } from './failure-kind.js';
+export type { FailureKind, FailureSource } from './failure-kind.js';
+export { classifyActionClass } from './action-class.js';
+export type { ActionClass, CodeChange } from './action-class.js';
+export {
+  detectExhaustion,
+  detectSemanticDisagreement,
+  convergenceVerdict,
+  jaccardSimilarity,
+} from './convergence-detect.js';
+export type {
+  IterationRecord,
+  ConvergenceAnalysis,
+  ConvergenceConfig,
+  ConvergenceState as ConvergenceDetectState,
+  ConvergenceVerdict,
+  ConstraintLike,
+} from './convergence-detect.js';
 export type {
   ProxyConfig,
   GovernedProxy,
@@ -73,6 +101,8 @@ export function parseArgs(args: string[]): ProxyConfig | null {
   let stateDir = '.governance';
   let enforcement: 'strict' | 'advisory' = 'strict';
   let timeout: number | undefined;
+  let maxCalls: number | undefined;
+  let schemaMode: 'off' | 'warn' | 'strict' = 'off';
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -96,6 +126,21 @@ export function parseArgs(args: string[]): ProxyConfig | null {
         return null;
       }
       timeout = val;
+    } else if (arg === '--max-calls' && i + 1 < args.length) {
+      const val = parseInt(args[++i], 10);
+      if (isNaN(val) || val <= 0) {
+        process.stderr.write(`[mcp-proxy] Invalid --max-calls: must be a positive integer.\n`);
+        return null;
+      }
+      maxCalls = val;
+    } else if (arg === '--schema' && i + 1 < args.length) {
+      const val = args[++i];
+      if (val === 'off' || val === 'warn' || val === 'strict') {
+        schemaMode = val;
+      } else {
+        process.stderr.write(`[mcp-proxy] Invalid --schema mode: ${val}. Use 'off', 'warn', or 'strict'.\n`);
+        return null;
+      }
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
       return null;
@@ -113,7 +158,7 @@ export function parseArgs(args: string[]): ProxyConfig | null {
     return null;
   }
 
-  return { upstream, upstreamArgs, stateDir, enforcement, timeout };
+  return { upstream, upstreamArgs, stateDir, enforcement, timeout, maxCalls, schemaMode };
 }
 
 function printUsage(): void {
@@ -125,6 +170,7 @@ Usage:
   npx @sovereign-labs/mcp-proxy --wrap <server>   [--config <path>] [--enforcement <mode>]
   npx @sovereign-labs/mcp-proxy --unwrap <server> [--config <path>]
   npx @sovereign-labs/mcp-proxy --view     [--state-dir <dir>] [--tool <name>] [--outcome <type>] [--limit <n>]
+  npx @sovereign-labs/mcp-proxy --replay   [--state-dir <dir>] [N]
   npx @sovereign-labs/mcp-proxy --explain  [--state-dir <dir>] [--llm <provider>]
   npx @sovereign-labs/mcp-proxy --receipts [--state-dir <dir>]
   npx @sovereign-labs/mcp-proxy --verify  [--state-dir <dir>]
@@ -133,6 +179,8 @@ Proxy mode (wraps an upstream MCP server):
   --upstream <cmd>        Upstream MCP server command (required for proxy mode)
   --enforcement <mode>    'strict' (default) or 'advisory'
   --timeout <ms>          Upstream response timeout in ms (default: 300000)
+  --max-calls <n>         Maximum tool calls before blocking (budget cap)
+  --schema <mode>         Schema validation: 'off' (default), 'warn', 'strict'
   --state-dir <dir>       Governance state directory (default: .governance)
 
 Setup commands (modify .mcp.json):
@@ -143,6 +191,7 @@ Setup commands (modify .mcp.json):
 Inspection commands (offline, no proxy needed):
   --demo                  Interactive demo — see governance in action (no config needed)
   --view                  Detailed per-receipt timeline (the proof you can show someone)
+  --replay [N]            Timeline story view — phases, turning points (default: last 200)
   --explain               Plain-language summary of what the agent did
   --receipts              Show session summary: tool calls, mutations, blocked, constraints
   --verify                Verify receipt chain integrity (tamper detection)
@@ -712,6 +761,15 @@ if (isMainModule) {
       outcome: outcomeIdx !== -1 ? args[outcomeIdx + 1] : undefined,
       limit: limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : undefined,
     });
+    process.exit(0);
+  }
+
+  if (args.includes('--replay')) {
+    const replayIdx = args.indexOf('--replay');
+    // Check if there's a numeric argument after --replay
+    const nextArg = args[replayIdx + 1];
+    const limit = nextArg && !nextArg.startsWith('--') ? parseInt(nextArg, 10) : 200;
+    printReplay(stateDir, isNaN(limit) ? 200 : limit);
     process.exit(0);
   }
 

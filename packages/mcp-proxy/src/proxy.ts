@@ -46,6 +46,12 @@ import {
 } from './governance.js';
 import { isMetaTool, handleMetaTool, META_TOOL_DEFS } from './meta-tools.js';
 import { generateReceiptTitle, generateReceiptSummary } from './explain.js';
+import { createBudgetState, checkBudget, recordCall, recordBlocked, type BudgetState } from './budget.js';
+import { validateToolArgs, type SchemaMode } from './schema-check.js';
+import { createLoopDetector, recordAndCheck, type LoopDetector } from './loop-detect.js';
+import { createSessionStats, recordOutcome, formatExitSummary, type SessionStats } from './summary.js';
+import { classifyFailureKind } from './failure-kind.js';
+import { classifyActionClass } from './action-class.js';
 import type {
   ProxyConfig,
   ProxyState,
@@ -65,6 +71,12 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
   const enforcement = config.enforcement ?? 'strict';
   const stateDir = config.stateDir;
   const upstreamTimeoutMs = config.timeout ?? 300_000; // 5 minutes default
+  const schemaMode: SchemaMode = config.schemaMode ?? 'off';
+
+  // v0.6.0 bolt-ons: budget, loop detection, session stats
+  const budget = createBudgetState(config.maxCalls);
+  const loopDetector = createLoopDetector();
+  let sessionStats: SessionStats;
 
   // Parse upstream command — split shell string into command + args
   const upstreamParts = config.upstreamArgs?.length
@@ -307,6 +319,47 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
       return;
     }
 
+    // ── v0.6.0 Pre-gate: Budget check ──
+    const budgetCheck = checkBudget(budget);
+    if (!budgetCheck.allowed) {
+      recordBlocked(budget);
+      const mutation = toolCallToMutation(toolName, toolArgs);
+      const mutationType = classifyMutationType(mutation.verb, toolArgs);
+      const target = computeToolTarget(toolName, toolArgs);
+      const dummyGate = makeDummyGateResult(budgetCheck.reason!, 'budget');
+      const ctx: ToolCallContext = {
+        toolName, toolArgs, mutation, mutationType,
+        startTime: Date.now(), target, convergenceSignal: 'none', gateResult: dummyGate,
+      };
+      handleBlocked(msg, ctx, 'budget');
+      return;
+    }
+
+    // ── v0.6.0 Pre-gate: Schema validation ──
+    if (schemaMode !== 'off') {
+      const schemaResult = validateToolArgs(toolName, toolArgs);
+      if (!schemaResult.valid) {
+        const errMsg = `SCHEMA: Invalid arguments for "${toolName}": ${schemaResult.errors.join(', ')}`;
+        if (schemaMode === 'strict') {
+          sessionStats.schemaBlocks++;
+          const mutation = toolCallToMutation(toolName, toolArgs);
+          const mutationType = classifyMutationType(mutation.verb, toolArgs);
+          const target = computeToolTarget(toolName, toolArgs);
+          const dummyGate = makeDummyGateResult(errMsg, 'schema');
+          const ctx: ToolCallContext = {
+            toolName, toolArgs, mutation, mutationType,
+            startTime: Date.now(), target, convergenceSignal: 'none', gateResult: dummyGate,
+          };
+          handleBlocked(msg, ctx, 'schema');
+          return;
+        } else {
+          // Warn mode: log and continue
+          sessionStats.schemaWarnings++;
+          process.stderr.write(`[mcp-proxy] ${errMsg}\n`);
+        }
+      }
+    }
+
     // Build context
     const mutation = toolCallToMutation(toolName, toolArgs);
     const mutationType = classifyMutationType(mutation.verb, toolArgs);
@@ -321,7 +374,13 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     };
 
     if (!gateResult.forward) {
-      handleBlocked(msg, ctx);
+      // Classify which gate blocked
+      const blockedBy = !gateResult.constraintCheck.passed ? 'constraint'
+        : !gateResult.authorityCheck.passed ? 'authority'
+        : !gateResult.containmentCheck.passed ? 'containment'
+        : convergenceSignal === 'exhausted' || convergenceSignal === 'loop' ? 'convergence'
+        : 'governance';
+      handleBlocked(msg, ctx, blockedBy);
       return;
     }
 
@@ -334,6 +393,19 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     }
   }
 
+  /**
+   * Create a synthetic GateResult for pre-gate blocks (budget, schema).
+   */
+  function makeDummyGateResult(reason: string, _source: string): import('./governance.js').GateResult {
+    return {
+      forward: false,
+      constraintCheck: { passed: true },
+      authorityCheck: { passed: true },
+      containmentCheck: { passed: true, attribution: 'no_intent' },
+      blockReason: reason,
+    };
+  }
+
   // ==========================================================================
   // TOOL CALL PATH HANDLERS (extracted from handleToolsCall)
   // ==========================================================================
@@ -342,14 +414,18 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
    * Handle a governance-blocked tool call.
    * Builds receipt with full tier annotations and returns error to agent.
    */
-  function handleBlocked(msg: JsonRpcRequest, ctx: ToolCallContext): void {
+  function handleBlocked(msg: JsonRpcRequest, ctx: ToolCallContext, blockedBy?: string): void {
     const record = buildRecordBase(ctx.mutation, ctx.toolArgs,
       ctx.gateResult.constraintCheck, ctx.gateResult.authorityCheck, ctx.mutationType);
     record.outcome = 'blocked';
     record.error = ctx.gateResult.blockReason;
+    record.blocked_by = blockedBy;
     record.durationMs = Date.now() - ctx.startTime;
     enrichReceipt(record, ctx);
     recordReceipt(record);
+
+    // Track in session stats
+    recordOutcome(sessionStats, ctx.toolName, 'blocked', ctx.mutationType, ctx.gateResult.blockReason);
 
     writeToAgent({
       jsonrpc: '2.0',
@@ -374,6 +450,9 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     enrichReceipt(record, ctx);
     recordReceipt(record);
 
+    // Track in session stats
+    recordOutcome(sessionStats, ctx.toolName, 'error', ctx.mutationType);
+
     writeToAgent({
       jsonrpc: '2.0',
       id: msg.id,
@@ -391,9 +470,15 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
         (response.result as Record<string, unknown>).isError === true);
     const errorText = isError ? extractErrorText(response) : undefined;
 
-    // Seed constraint on failure
+    // Classify failure kind for constraint seeding and receipt metadata
+    let failureKind: 'harness_fault' | 'app_failure' | 'unknown' | undefined;
+
+    // Seed constraint on failure — but only for app failures, not harness faults
     if (isError && errorText) {
-      processFailure(ctx.toolName, ctx.mutation.target, errorText, state.constraints, stateDir);
+      failureKind = classifyFailureKind(errorText);
+      if (failureKind !== 'harness_fault') {
+        processFailure(ctx.toolName, ctx.mutation.target, errorText, state.constraints, stateDir);
+      }
     }
 
     // Update convergence tracker on failure
@@ -401,16 +486,33 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     if (isError) {
       failureSignature = extractProxySignature(response);
       checkConvergence(state.convergence, ctx.toolName, ctx.target, failureSignature);
+
+      // v0.6.0: Loop detection on errors
+      const loopCheck = recordAndCheck(loopDetector, ctx.toolName, ctx.target, errorText ?? '');
+      if (loopCheck.loopDetected) {
+        process.stderr.write(`[mcp-proxy] ${loopCheck.reason}\n`);
+      }
     }
+
+    // v0.6.0: Track budget (only forwarded calls count)
+    recordCall(budget);
+
+    // v0.6.0: Classify action class from tool args (best-effort)
+    const actionClass = classifyActionFromArgs(ctx.toolName, ctx.toolArgs);
 
     const record = buildRecordBase(ctx.mutation, ctx.toolArgs,
       ctx.gateResult.constraintCheck, ctx.gateResult.authorityCheck, ctx.mutationType);
     record.outcome = isError ? 'error' : 'success';
     record.error = errorText;
     record.failureSignature = failureSignature;
+    record.failureKind = failureKind;
+    record.actionClass = actionClass;
     record.durationMs = Date.now() - ctx.startTime;
     enrichReceipt(record, ctx);
     recordReceipt(record);
+
+    // Track in session stats
+    recordOutcome(sessionStats, ctx.toolName, isError ? 'error' : 'success', ctx.mutationType);
 
     // Forward upstream response to agent (unmodified — proxy is transparent)
     writeToAgent(response);
@@ -501,6 +603,19 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     return record;
   }
 
+  /** Print exit summary to stderr. Idempotent (only prints once). */
+  let exitSummaryPrinted = false;
+  function printExitSummary(): void {
+    if (exitSummaryPrinted) return;
+    if (!sessionStats || sessionStats.totalCalls === 0) return;
+    exitSummaryPrinted = true;
+    try {
+      process.stderr.write(formatExitSummary(sessionStats));
+    } catch {
+      // Best-effort — stderr may be closed
+    }
+  }
+
   function extractErrorText(response: JsonRpcResponse): string {
     if (response.error) {
       return response.error.message || JSON.stringify(response.error);
@@ -514,6 +629,21 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     return 'Unknown error';
   }
 
+  /**
+   * Extract action class from tool call arguments.
+   * Best-effort: looks for edits/changes arrays in the args.
+   */
+  function classifyActionFromArgs(toolName: string, args: Record<string, unknown>): string | undefined {
+    // Look for common patterns: edits array, changes array, or file+content
+    const edits = (args.edits ?? args.changes ?? args.mutations) as
+      Array<{ file: string; search?: string; replace?: string; content?: string }> | undefined;
+    if (Array.isArray(edits) && edits.length > 0) {
+      const predicateFiles = (args.predicateFiles ?? args.predicate_files) as string[] | undefined;
+      return classifyActionClass(edits, predicateFiles);
+    }
+    return undefined;
+  }
+
   // ==========================================================================
   // PROXY LIFECYCLE
   // ==========================================================================
@@ -521,6 +651,7 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
   return {
     async start(): Promise<void> {
       state = initState();
+      sessionStats = createSessionStats(budget, loopDetector, schemaMode);
 
       // Spawn upstream
       upstream = spawnUpstream();
@@ -547,12 +678,14 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
       // Handle upstream exit
       upstream.exited.then((code) => {
         process.stderr.write(`[mcp-proxy] Upstream exited with code ${code}\n`);
+        printExitSummary();
         releaseLock(stateDir);
         process.exit(code ?? 1);
       });
 
       // Release lock on process exit (SIGTERM from IDE, SIGINT from Ctrl-C, etc.)
       const cleanup = () => {
+        printExitSummary();
         releaseLock(stateDir);
         process.exit(0);
       };

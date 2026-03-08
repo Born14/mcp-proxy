@@ -31,6 +31,12 @@ export interface ProxyConfig {
 
   /** Upstream response timeout in milliseconds. Default: 300000 (5 minutes) */
   timeout?: number;
+
+  /** Maximum tool calls before blocking. Undefined = unlimited. */
+  maxCalls?: number;
+
+  /** Schema validation mode: 'off' (default), 'warn', 'strict'. */
+  schemaMode?: 'off' | 'warn' | 'strict';
 }
 
 // =============================================================================
@@ -161,8 +167,19 @@ export interface ToolCallRecord {
   /** Error text if outcome is 'error' */
   error?: string;
 
+  /** Standardized blocker identity when outcome is 'blocked'.
+   *  Values: 'constraint', 'authority', 'containment', 'convergence',
+   *          'budget', 'loop', 'schema' */
+  blocked_by?: string;
+
   /** Failure signature if outcome is 'error' */
   failureSignature?: string;
+
+  /** Failure kind classification: infrastructure vs app code error */
+  failureKind?: 'harness_fault' | 'app_failure' | 'unknown';
+
+  /** Action class: mutation strategy type (schema_migration, rewrite_page, etc.) */
+  actionClass?: string;
 
   /** Wall-clock duration in milliseconds */
   durationMs: number;
