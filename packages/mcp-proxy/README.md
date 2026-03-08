@@ -146,6 +146,8 @@ npx @sovereign-labs/mcp-proxy --explain --llm ollama --model llama3.2
 npx @sovereign-labs/mcp-proxy --upstream "command"
 npx @sovereign-labs/mcp-proxy --upstream "command" --enforcement advisory
 npx @sovereign-labs/mcp-proxy --upstream "command" --state-dir ./my-state
+npx @sovereign-labs/mcp-proxy --upstream "command" --schema strict
+npx @sovereign-labs/mcp-proxy --upstream "command" --webhook https://example.com/hook
 ```
 
 ## What --view Shows
@@ -257,6 +259,62 @@ npx @sovereign-labs/mcp-proxy --explain --llm ollama
 ```
 
 The LLM receives a compressed summary of receipts (not raw data) and produces a narrative. If the LLM call fails, the heuristic output is shown instead. No dependencies — just HTTP calls.
+
+## Smart Defaults (v0.7.0)
+
+Schema validation defaults to `warn` — catches hallucinated tool parameters without any configuration:
+
+```bash
+# Default: warns on invalid parameters (no flag needed)
+npx @sovereign-labs/mcp-proxy --upstream "command"
+
+# Explicit modes
+npx @sovereign-labs/mcp-proxy --upstream "command" --schema off     # No validation
+npx @sovereign-labs/mcp-proxy --upstream "command" --schema strict  # Block invalid calls
+```
+
+## Narrative Exit Summary
+
+When a session ends, the proxy prints a plain-language summary alongside the stats:
+
+```
+Your agent made 47 tool calls over 3.2 minutes.
+It read 35 resources and modified 8. 2 calls were blocked
+(constraint violation, budget exceeded). No loops detected.
+```
+
+Always printed — no flag needed.
+
+## Webhooks
+
+Fire-and-forget notifications on three events: `blocked`, `loop_detected`, `session_complete`.
+
+```bash
+# Generic webhook
+npx @sovereign-labs/mcp-proxy --upstream "command" --webhook https://example.com/hook
+
+# Multiple webhooks
+npx @sovereign-labs/mcp-proxy --upstream "command" \
+  --webhook https://hook1.example.com \
+  --webhook https://hook2.example.com
+```
+
+### Discord & Telegram Auto-Detection
+
+Set environment variables and the proxy picks them up automatically — no `--webhook` flag needed:
+
+```bash
+# Discord: just the webhook URL
+export DISCORD_WEBHOOK="https://discord.com/api/webhooks/123/abc"
+
+# Telegram: bot token + chat ID
+export TELEGRAM_BOT_TOKEN="bot123"
+export TELEGRAM_CHAT_ID="456"
+```
+
+Discord gets formatted messages with emoji and Markdown. Telegram gets `parse_mode: 'Markdown'`. Generic endpoints get the raw event JSON.
+
+2s abort timeout on all webhook calls — the proxy never blocks on delivery.
 
 ## Enforcement Modes
 
