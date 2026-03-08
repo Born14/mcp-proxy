@@ -36,6 +36,15 @@ import {
   createConvergenceTracker,
 } from './governance.js';
 import { generateReceiptTitle, generateReceiptSummary } from './explain.js';
+import {
+  createSessionStats,
+  recordOutcome,
+  formatNarrativeSummary,
+  formatExitSummary,
+} from './summary.js';
+import { createBudgetState, recordCall } from './budget.js';
+import { createLoopDetector } from './loop-detect.js';
+import { fireWebhook, blockedEvent, sessionCompleteEvent } from './webhook.js';
 import type { ProxyState, ToolCallRecord, ConstraintEntry } from './types.js';
 import { existsSync, rmSync } from 'fs';
 
@@ -64,6 +73,8 @@ interface SimulatedCall {
   outcome: 'success' | 'error' | 'blocked';
   errorText?: string;
   narration: string;  // What we tell the human is happening
+  schemaWarning?: boolean;
+  hallucinated?: string[];
 }
 
 const DEMO_SCRIPT: SimulatedCall[] = [
@@ -105,6 +116,14 @@ const DEMO_SCRIPT: SimulatedCall[] = [
     narration: 'Agent reads instead (different strategy)',
   },
   {
+    toolName: 'write_note',
+    args: { name: 'summary', content: 'Sprint review notes', priority: 'high', format: 'markdown' },
+    outcome: 'success',
+    narration: 'Agent sends hallucinated parameters — schema catches them',
+    schemaWarning: true,
+    hallucinated: ['priority', 'format'],
+  },
+  {
     toolName: 'delete_note',
     args: { name: 'old-draft' },
     outcome: 'success',
@@ -139,6 +158,11 @@ export async function runDemo(): Promise<void> {
   const enforcement = 'strict';
   const convergence = createConvergenceTracker();
 
+  // Session stats for narrative summary
+  const budget = createBudgetState();
+  const loopDetector = createLoopDetector();
+  const sessionStats = createSessionStats(budget, loopDetector, 'warn');
+
   let constraints: ConstraintEntry[] = loadConstraints(stateDir);
   let lastHash = getLastReceiptHash(stateDir);
   let seq = getReceiptCount(stateDir);
@@ -153,6 +177,7 @@ export async function runDemo(): Promise<void> {
   console.log('');
   console.log(`  controller:  ${c.dim(controller.id.slice(0, 8) + '...')}`);
   console.log(`  enforcement: ${c.cyan(enforcement)}`);
+  console.log(`  schema:      ${c.cyan('warn')} ${c.dim('(catches hallucinated parameters)')}`);
   console.log(`  state dir:   ${c.dim(stateDir + '/')}`);
   console.log('');
   console.log(`  ${c.dim('───────────────────────────────────────────────────────────────')}`);
@@ -227,6 +252,8 @@ export async function runDemo(): Promise<void> {
 
       console.log(`      ${c.dim('hash: ' + receipt.hash.slice(0, 16) + '...')}`);
       console.log('');
+      recordOutcome(sessionStats, call.toolName, 'blocked', mutationType, gateResult.blockReason);
+      recordCall(budget);
       await sleep(600);
       continue;
     }
@@ -281,6 +308,8 @@ export async function runDemo(): Promise<void> {
 
       console.log(`      ${c.dim('hash: ' + receipt.hash.slice(0, 16) + '...')}`);
       console.log('');
+      recordOutcome(sessionStats, call.toolName, 'error', mutationType);
+      recordCall(budget);
       await sleep(600);
       continue;
     }
@@ -288,6 +317,14 @@ export async function runDemo(): Promise<void> {
     // Success path
     const icon = c.green('✓');
     console.log(`  ${icon}  ${c.cyan(call.toolName)}${mutBadge}  ${c.dim('→')} target: ${c.dim(target)}`);
+
+    // Schema validation warning (v0.7.0)
+    if (call.schemaWarning && call.hallucinated) {
+      const params = call.hallucinated.map(p => c.yellow(p)).join(', ');
+      console.log(`      ${c.yellow('⚠ schema')}  unknown parameters: ${params}`);
+      console.log(`      ${c.dim('call forwarded (warn mode) — strict would block')}`);
+      sessionStats.schemaWarnings += call.hallucinated.length;
+    }
 
     const record: Omit<ToolCallRecord, 'hash'> = {
       id: `r_${seq}`,
@@ -324,6 +361,8 @@ export async function runDemo(): Promise<void> {
 
     console.log(`      ${c.dim('hash: ' + receipt.hash.slice(0, 16) + '...')}`);
     console.log('');
+    recordOutcome(sessionStats, call.toolName, 'success', mutationType);
+    recordCall(budget);
     await sleep(400);
   }
 
@@ -344,14 +383,29 @@ export async function runDemo(): Promise<void> {
   console.log('');
 
   // Summary stats
-  const mutations = DEMO_SCRIPT.filter((_, i) => {
-    const m = toolCallToMutation(DEMO_SCRIPT[i].toolName, DEMO_SCRIPT[i].args);
-    return classifyMutationType(m.verb, DEMO_SCRIPT[i].args) === 'mutating';
-  }).length;
-  const blocked = DEMO_SCRIPT.filter(d => d.outcome === 'blocked').length;
-  const errors = DEMO_SCRIPT.filter(d => d.outcome === 'error').length;
+  console.log(`  ${c.bold(String(seq))} receipts  |  ${sessionStats.mutations > 0 ? c.yellow(String(sessionStats.mutations)) : '0'} mutations  |  ${sessionStats.blocked > 0 ? c.yellow(String(sessionStats.blocked)) : '0'} blocked  |  ${sessionStats.errors > 0 ? c.red(String(sessionStats.errors)) : '0'} errors`);
+  console.log('');
 
-  console.log(`  ${c.bold(String(seq))} receipts  |  ${mutations > 0 ? c.yellow(String(mutations)) : '0'} mutations  |  ${blocked > 0 ? c.yellow(String(blocked)) : '0'} blocked  |  ${errors > 0 ? c.red(String(errors)) : '0'} errors`);
+  // Narrative exit summary (v0.7.0)
+  console.log(`  ${c.dim('───────────────────────────────────────────────────────────────')}`);
+  console.log('');
+  console.log(`  ${c.bold('NARRATIVE SUMMARY')}`);
+  const narrative = formatNarrativeSummary(sessionStats);
+  for (const line of narrative.split('\n')) {
+    if (line.trim()) console.log(`  ${line}`);
+  }
+  console.log('');
+
+  // Webhook notification (v0.7.0)
+  console.log(`  ${c.dim('───────────────────────────────────────────────────────────────')}`);
+  console.log('');
+  console.log(`  ${c.bold('WEBHOOKS')}`);
+  console.log('');
+  console.log(`  ${c.dim('If configured, these events would fire:')}`);
+  console.log(`  ${c.yellow('⊘')} ${c.dim('blocked')}      → write_note on todo-list (constraint violation)`);
+  console.log(`  ${c.green('📋')} ${c.dim('session_complete')} → ${seq} calls, ${sessionStats.mutations} mutations, ${sessionStats.blocked} blocked`);
+  console.log('');
+  console.log(`  ${c.dim('Configure with --webhook or DISCORD_WEBHOOK / TELEGRAM_BOT_TOKEN env vars.')}`);
   console.log('');
 
   // What just happened
@@ -362,7 +416,8 @@ export async function runDemo(): Promise<void> {
   console.log(`  Every tool call was ${c.cyan('receipted')} with a tamper-evident hash chain.`);
   console.log(`  When the agent's write failed, the proxy ${c.magenta('seeded a G2 constraint')}.`);
   console.log(`  When the agent retried the same call, it was ${c.yellow('blocked')} automatically.`);
-  console.log(`  The agent was forced to try a ${c.green('different strategy')}.`);
+  console.log(`  When the agent ${c.yellow('hallucinated parameters')}, schema validation caught it.`);
+  console.log(`  A ${c.green('narrative summary')} and ${c.green('webhook events')} closed the session.`);
   console.log('');
   console.log(`  No prompting. No rules file. ${c.bold('Structural governance.')}`);
   console.log('');
