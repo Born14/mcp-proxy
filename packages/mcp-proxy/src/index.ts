@@ -43,8 +43,10 @@ export { validateToolArgs } from './schema-check.js';
 export type { SchemaCheckResult, SchemaMode } from './schema-check.js';
 export { createLoopDetector, recordAndCheck, classifyError, getLoopStats } from './loop-detect.js';
 export type { LoopDetector, LoopDetectorConfig, LoopCheckResult } from './loop-detect.js';
-export { createSessionStats, recordOutcome, formatExitSummary } from './summary.js';
+export { createSessionStats, recordOutcome, formatExitSummary, formatNarrativeSummary } from './summary.js';
 export type { SessionStats } from './summary.js';
+export { fireWebhook, resolveWebhooks, blockedEvent, loopDetectedEvent, sessionCompleteEvent } from './webhook.js';
+export type { WebhookEvent, WebhookConfig } from './webhook.js';
 export { printReplay } from './replay.js';
 export { classifyFailureKind } from './failure-kind.js';
 export type { FailureKind, FailureSource } from './failure-kind.js';
@@ -102,7 +104,8 @@ export function parseArgs(args: string[]): ProxyConfig | null {
   let enforcement: 'strict' | 'advisory' = 'strict';
   let timeout: number | undefined;
   let maxCalls: number | undefined;
-  let schemaMode: 'off' | 'warn' | 'strict' = 'off';
+  let schemaMode: 'off' | 'warn' | 'strict' = 'warn';
+  let webhooks: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -141,6 +144,8 @@ export function parseArgs(args: string[]): ProxyConfig | null {
         process.stderr.write(`[mcp-proxy] Invalid --schema mode: ${val}. Use 'off', 'warn', or 'strict'.\n`);
         return null;
       }
+    } else if (arg === '--webhook' && i + 1 < args.length) {
+      webhooks.push(args[++i]);
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
       return null;
@@ -158,7 +163,7 @@ export function parseArgs(args: string[]): ProxyConfig | null {
     return null;
   }
 
-  return { upstream, upstreamArgs, stateDir, enforcement, timeout, maxCalls, schemaMode };
+  return { upstream, upstreamArgs, stateDir, enforcement, timeout, maxCalls, schemaMode, webhooks };
 }
 
 function printUsage(): void {
@@ -180,7 +185,8 @@ Proxy mode (wraps an upstream MCP server):
   --enforcement <mode>    'strict' (default) or 'advisory'
   --timeout <ms>          Upstream response timeout in ms (default: 300000)
   --max-calls <n>         Maximum tool calls before blocking (budget cap)
-  --schema <mode>         Schema validation: 'off' (default), 'warn', 'strict'
+  --schema <mode>         Schema validation: 'warn' (default), 'off', 'strict'
+  --webhook <url>         Webhook URL for notifications (repeatable, auto-detects Discord/Telegram)
   --state-dir <dir>       Governance state directory (default: .governance)
 
 Setup commands (modify .mcp.json):

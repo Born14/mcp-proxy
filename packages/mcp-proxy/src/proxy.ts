@@ -49,7 +49,8 @@ import { generateReceiptTitle, generateReceiptSummary } from './explain.js';
 import { createBudgetState, checkBudget, recordCall, recordBlocked, type BudgetState } from './budget.js';
 import { validateToolArgs, type SchemaMode } from './schema-check.js';
 import { createLoopDetector, recordAndCheck, type LoopDetector } from './loop-detect.js';
-import { createSessionStats, recordOutcome, formatExitSummary, type SessionStats } from './summary.js';
+import { createSessionStats, recordOutcome, formatExitSummary, formatNarrativeSummary, type SessionStats } from './summary.js';
+import { fireWebhook, blockedEvent, loopDetectedEvent, sessionCompleteEvent, resolveWebhooks } from './webhook.js';
 import { classifyFailureKind } from './failure-kind.js';
 import { classifyActionClass } from './action-class.js';
 import type {
@@ -71,7 +72,10 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
   const enforcement = config.enforcement ?? 'strict';
   const stateDir = config.stateDir;
   const upstreamTimeoutMs = config.timeout ?? 300_000; // 5 minutes default
-  const schemaMode: SchemaMode = config.schemaMode ?? 'off';
+  const schemaMode: SchemaMode = config.schemaMode ?? 'warn';
+
+  // v0.7.0: Resolve webhook URLs from config + environment
+  const webhookUrls = resolveWebhooks(config.webhooks ?? []);
 
   // v0.6.0 bolt-ons: budget, loop detection, session stats
   const budget = createBudgetState(config.maxCalls);
@@ -427,6 +431,11 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     // Track in session stats
     recordOutcome(sessionStats, ctx.toolName, 'blocked', ctx.mutationType, ctx.gateResult.blockReason);
 
+    // v0.7.0: Fire webhook on blocked calls
+    if (webhookUrls.length > 0) {
+      fireWebhook(webhookUrls, blockedEvent(ctx.toolName, ctx.gateResult.blockReason ?? 'governance'));
+    }
+
     writeToAgent({
       jsonrpc: '2.0',
       id: msg.id,
@@ -491,6 +500,10 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
       const loopCheck = recordAndCheck(loopDetector, ctx.toolName, ctx.target, errorText ?? '');
       if (loopCheck.loopDetected) {
         process.stderr.write(`[mcp-proxy] ${loopCheck.reason}\n`);
+        // v0.7.0: Fire webhook on loop detection
+        if (webhookUrls.length > 0) {
+          fireWebhook(webhookUrls, loopDetectedEvent(ctx.toolName, loopCheck.reason ?? 'repeated failure pattern'));
+        }
       }
     }
 
@@ -610,9 +623,28 @@ export function createGovernedProxy(config: ProxyConfig): GovernedProxy {
     if (!sessionStats || sessionStats.totalCalls === 0) return;
     exitSummaryPrinted = true;
     try {
+      // v0.7.0: Narrative summary (plain language) replaces box-drawing stats
+      process.stderr.write(formatNarrativeSummary(sessionStats));
       process.stderr.write(formatExitSummary(sessionStats));
     } catch {
       // Best-effort — stderr may be closed
+    }
+
+    // v0.7.0: Fire session_complete webhook
+    if (webhookUrls.length > 0) {
+      const durationMs = Date.now() - sessionStats.startTime;
+      const dur = durationMs < 60_000 ? `${(durationMs / 1000).toFixed(1)}s`
+        : durationMs < 3_600_000 ? `${(durationMs / 60_000).toFixed(1)}m`
+        : `${(durationMs / 3_600_000).toFixed(1)}h`;
+      fireWebhook(webhookUrls, sessionCompleteEvent({
+        totalCalls: sessionStats.totalCalls,
+        mutations: sessionStats.mutations,
+        readonly: sessionStats.readonly,
+        blocked: sessionStats.blocked,
+        errors: sessionStats.errors,
+        succeeded: sessionStats.succeeded,
+        duration: dur,
+      }));
     }
   }
 

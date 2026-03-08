@@ -35,8 +35,11 @@ export interface ProxyConfig {
   /** Maximum tool calls before blocking. Undefined = unlimited. */
   maxCalls?: number;
 
-  /** Schema validation mode: 'off' (default), 'warn', 'strict'. */
+  /** Schema validation mode: 'off' (default in strict enforcement), 'warn' (default in advisory), 'strict'. */
   schemaMode?: 'off' | 'warn' | 'strict';
+
+  /** Webhook URLs to fire on blocked, loop_detected, session_complete events. */
+  webhooks?: string[];
 }
 
 // =============================================================================

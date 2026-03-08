@@ -201,6 +201,78 @@ export function formatExitSummary(stats: SessionStats): string {
   return lines.join('\n');
 }
 
+/**
+ * Format a plain-language narrative exit summary for stderr.
+ * Tells the operator what happened in human terms.
+ *
+ * Example output:
+ *   Your agent made 47 tool calls over 3.2 minutes.
+ *   It read 12 files, modified 8, and created 3.
+ *   2 calls were blocked by governance (1 constraint, 1 budget).
+ *   Schema validation caught 4 invalid parameters.
+ *   No loops detected. Chain integrity verified.
+ */
+export function formatNarrativeSummary(stats: SessionStats): string {
+  const durationMs = Date.now() - stats.startTime;
+  const durationStr = formatDuration(durationMs);
+  const loopStats = getLoopStats(stats.loopDetector);
+
+  const lines: string[] = [];
+  lines.push('');
+
+  // Main action line
+  lines.push(`Your agent made ${stats.totalCalls} tool call${stats.totalCalls !== 1 ? 's' : ''} over ${durationStr}.`);
+
+  // Read/modify/create breakdown from mutation classification
+  if (stats.readonly > 0 || stats.mutations > 0) {
+    const parts: string[] = [];
+    if (stats.readonly > 0) parts.push(`read ${stats.readonly}`);
+    if (stats.mutations > 0) parts.push(`modified ${stats.mutations}`);
+    lines.push(`It ${parts.join(' and ')}.`);
+  }
+
+  // Blocked calls
+  if (stats.blocked > 0) {
+    const reasons: string[] = [];
+    for (const [reason, count] of stats.blockReasons.entries()) {
+      reasons.push(`${count} ${reason}`);
+    }
+    const reasonStr = reasons.length > 0 ? ` (${reasons.join(', ')})` : '';
+    lines.push(`${stats.blocked} call${stats.blocked !== 1 ? 's were' : ' was'} blocked by governance${reasonStr}.`);
+  }
+
+  // Errors
+  if (stats.errors > 0) {
+    lines.push(`${stats.errors} call${stats.errors !== 1 ? 's' : ''} returned upstream errors.`);
+  }
+
+  // Schema warnings/blocks
+  if (stats.schemaMode !== 'off') {
+    if (stats.schemaWarnings > 0) {
+      lines.push(`Schema validation caught ${stats.schemaWarnings} invalid parameter${stats.schemaWarnings !== 1 ? 's' : ''}.`);
+    }
+    if (stats.schemaBlocks > 0) {
+      lines.push(`Schema validation blocked ${stats.schemaBlocks} call${stats.schemaBlocks !== 1 ? 's' : ''} with invalid parameters.`);
+    }
+  }
+
+  // Budget
+  if (stats.budget.maxCalls !== undefined) {
+    lines.push(`Budget: ${stats.budget.callCount}/${stats.budget.maxCalls} calls used.`);
+  }
+
+  // Loops
+  if (loopStats.activeLoops > 0) {
+    lines.push(`${loopStats.activeLoops} loop${loopStats.activeLoops !== 1 ? 's' : ''} detected — the agent repeated failing patterns.`);
+  } else {
+    lines.push('No loops detected.');
+  }
+
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 function pad(s: string, width: number): string {
   return s.length >= width ? s : s + ' '.repeat(width - s.length);
 }
