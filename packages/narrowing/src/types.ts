@@ -321,6 +321,16 @@ export interface NarrowingConfig {
 
   /** Path to persist receipts (default: .narrowing/receipts.jsonl) */
   receiptPath: string;
+
+  /**
+   * Path to auto-persist constraint state as JSON.
+   * When set:
+   * - On construction: loads existing state if file exists
+   * - On every recordOutcome(): saves state to disk
+   * This is how constraints survive across process restarts.
+   * Default: undefined (no auto-persist — use snapshot()/restore() manually)
+   */
+  statePath?: string;
 }
 
 // =============================================================================

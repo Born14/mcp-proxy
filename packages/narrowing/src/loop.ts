@@ -21,6 +21,8 @@
  *   }
  */
 
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type {
   NarrowingConfig,
   Proposal,
@@ -92,6 +94,11 @@ export class NarrowingLoop {
     this.receipts = this.config.receipts
       ? new ReceiptChain(this.config.receiptPath)
       : null;
+
+    // Auto-load persisted state if statePath exists
+    if (this.config.statePath) {
+      this.autoLoad();
+    }
   }
 
   // =========================================================================
@@ -250,6 +257,11 @@ export class NarrowingLoop {
     // GC expired constraints
     this.constraints.gc();
 
+    // Auto-persist if statePath configured
+    if (this.config.statePath) {
+      this.autoPersist();
+    }
+
     return {
       outcome,
       newConstraints,
@@ -343,5 +355,54 @@ export class NarrowingLoop {
     this.attempt = data.attempt;
     this.sessionId = data.sessionId;
     this.journal.resume();
+  }
+
+  // =========================================================================
+  // PERSISTENCE — Constraints that survive process restarts
+  // =========================================================================
+
+  /**
+   * Explicitly persist current state to statePath.
+   * Called automatically after every recordOutcome() when statePath is set.
+   * Can also be called manually (e.g., on process exit).
+   * No-op if statePath is not configured.
+   */
+  persist(): void {
+    if (!this.config.statePath) return;
+    this.autoPersist();
+  }
+
+  /** Auto-load state from statePath if it exists */
+  private autoLoad(): void {
+    const path = this.config.statePath!;
+    try {
+      if (existsSync(path)) {
+        const raw = readFileSync(path, 'utf-8');
+        const data = JSON.parse(raw);
+        if (data.constraints && data.convergence) {
+          this.constraints.load(data.constraints);
+          this.convergence.load(data.convergence);
+          this.attempt = data.attempt ?? 0;
+          // Don't restore sessionId — each process gets a fresh session
+          // but inherits all constraints from prior sessions
+          this.journal.resume();
+        }
+      }
+    } catch {
+      // File corrupt or unreadable — start fresh, don't crash
+    }
+  }
+
+  /** Auto-persist state to statePath */
+  private autoPersist(): void {
+    const path = this.config.statePath!;
+    try {
+      const dir = dirname(path);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const data = this.snapshot();
+      writeFileSync(path, JSON.stringify(data, null, 2));
+    } catch {
+      // Persist failure is non-fatal — constraints still live in memory
+    }
   }
 }

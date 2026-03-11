@@ -131,20 +131,43 @@ const myAdapter: DomainAdapter = {
 };
 ```
 
-## Persistence & Receipts
+## Persistence
 
-Every decision is recorded in a tamper-evident hash chain (optional):
+Constraints survive process restarts. One config field:
 
 ```typescript
 const loop = new NarrowingLoop({
   adapter: createToolCallAdapter(),
-  receipts: true,              // Enable hash-chained audit trail
-  journalPath: './narrowing.jsonl',  // Append-only event log
-  receiptPath: './receipts.jsonl',   // Tamper-evident receipt chain
+  statePath: './.narrowing/state.json',  // Auto-persist constraints to disk
 });
 ```
 
-**Cross-session persistence:** Constraints survive process restarts via `snapshot()` / `restore()`:
+That's it. On every `recordOutcome()`, the loop writes all constraints, convergence state, and attempt counter to disk. On construction, it loads existing state if the file exists. Each new process gets a fresh `sessionId` but inherits all constraints from prior sessions.
+
+- Missing file → starts fresh (no error)
+- Corrupt file → starts fresh (no error)
+- Write failure → non-fatal (constraints still live in memory)
+- Parent directories created automatically
+
+**Why this matters:** Within-run memory is table stakes. Cross-session structural constraints — failure knowledge that persists across context window resets, process restarts, and agent handoffs — is what prevents the $8 burn from happening on day 2.
+
+### Receipts & Journal
+
+Every decision is also recorded in a tamper-evident hash chain (optional):
+
+```typescript
+const loop = new NarrowingLoop({
+  adapter: createToolCallAdapter(),
+  statePath: './.narrowing/state.json',  // Auto-persist constraints
+  receipts: true,                         // Enable hash-chained audit trail
+  journalPath: './.narrowing/journal.jsonl',  // Append-only event log
+  receiptPath: './.narrowing/receipts.jsonl', // Tamper-evident receipt chain
+});
+```
+
+### Manual Persistence (advanced)
+
+For full control over when state is saved/loaded:
 
 ```typescript
 // Save state
@@ -155,8 +178,6 @@ fs.writeFileSync('narrowing-state.json', JSON.stringify(state));
 const saved = JSON.parse(fs.readFileSync('narrowing-state.json', 'utf-8'));
 loop.restore(saved);
 ```
-
-This is the key differentiator. Within-run memory is table stakes. Cross-session structural constraints — failure knowledge that persists across context window resets, process restarts, and agent handoffs — is what prevents the $8 burn from happening on day 2.
 
 ## Convergence Detection
 
@@ -176,6 +197,9 @@ if (loop.isDone()) {
 ```typescript
 const loop = new NarrowingLoop({
   adapter: createToolCallAdapter(),
+
+  // Auto-persist constraints across process restarts
+  statePath: './.narrowing/state.json',  // Default: undefined (no auto-persist)
 
   // How many times must a failure repeat before seeding a constraint?
   corroborationThreshold: 2,    // Default: 2
@@ -227,7 +251,7 @@ Key findings: frontier LLMs self-correct on simple failure boundaries within 1-2
 
 - **Runtime:** Zero dependencies. Pure TypeScript.
 - **Size:** ~2,200 LOC across 8 source files
-- **Tests:** 72 tests, 182 assertions
+- **Tests:** 80 tests, 201 assertions
 - **License:** MIT
 - **Requires:** Bun or Node.js 18+
 
@@ -246,7 +270,7 @@ Key findings: frontier LLMs self-correct on simple failure boundaries within 1-2
 │       ├── ml-training.ts  # ML hyperparameter search
 │       └── tool-call.ts    # Universal agent tool loops
 └── tests/
-    ├── narrowing.test.ts   # Core loop tests (26 tests)
-    ├── tool-call.test.ts   # Tool-call adapter tests (38 tests)
-    └── long-horizon.test.ts # Context degradation benchmark (8 tests)
+    ├── narrowing-physics.test.ts  # Core loop + persistence tests (34 tests)
+    ├── tool-call.test.ts          # Tool-call adapter tests (38 tests)
+    └── long-horizon.test.ts       # Context degradation benchmark (8 tests)
 ```
